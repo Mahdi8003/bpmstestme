@@ -1,0 +1,24 @@
+{
+  "name": "ravand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @ravand/api --filter @ravand/web dev",
+    "dev:api": "pnpm --filter @ravand/api dev",
+    "dev:web": "pnpm --filter @ravand/web dev",
+    "db:create": "pnpm --filter @ravand/api db:create",
+    "db:generate": "pnpm --filter @ravand/api db:generate",
+    "db:migrate": "pnpm --filter @ravand/api db:migrate",
+    "db:seed": "pnpm --filter @ravand/api db:seed",
+    "db:reset": "pnpm --filter @ravand/api db:reset",
+    "db:setup": "pnpm db:create && pnpm db:generate && pnpm db:migrate && pnpm db:seed",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

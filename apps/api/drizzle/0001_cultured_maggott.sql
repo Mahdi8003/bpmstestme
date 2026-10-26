@@ -1,0 +1,1 @@
+ALTER TABLE "case_documents" ADD COLUMN "document_key" text;
