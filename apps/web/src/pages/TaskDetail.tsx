@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  CommentDto,
-  DocumentDto,
-  FieldDef,
-  TaskDetailDto,
+import {
+  allDefinitionFields,
+  evaluateCondition,
+  fieldsForStage,
+  type CommentDto,
+  type DocumentDto,
+  type FieldDef,
+  type TaskDetailDto,
 } from '@ravand/shared';
 import {
   ArrowRight,
@@ -14,22 +17,32 @@ import {
   Clock,
   FileArrowUp,
   FileText,
+  DownloadSimple,
   Info,
   PaperPlaneTilt,
   SealCheck,
+  Trash,
   User,
   WarningCircle,
   XCircle,
 } from '@phosphor-icons/react';
 import { ApiError, api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { faNum, formatDate, formatDateTime, roleLabel } from '@/lib/format';
+import {
+  faNum,
+  formatDate,
+  formatDateTime,
+  formatMoney,
+  taskAssigneeLabel,
+} from '@/lib/format';
+import { hasPermission, useRoleName } from '@/lib/roles';
 import {
   Avatar,
   Button,
   Card,
   Field,
   Modal,
+  Select,
   Spinner,
   Textarea,
   cn,
@@ -43,7 +56,7 @@ import {
   TaskKindBadge,
   TaskStatusBadge,
 } from '@/components/domain';
-import { DynamicFields, useMasterOptions } from '@/components/DynamicFields';
+import { DynamicFields, fieldDisplayValue, useMasterOptions } from '@/components/DynamicFields';
 import { useToast } from '@/components/ToastProvider';
 
 type Decision = 'approve' | 'reject' | 'return' | 'request_info';
@@ -114,6 +127,7 @@ export function TaskDetailPage() {
   const { user } = useAuth();
   const toast = useToast();
   const options = useMasterOptions();
+  const roleName = useRoleName();
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const [actionComment, setActionComment] = useState('');
   const [chatComment, setChatComment] = useState('');
@@ -123,7 +137,14 @@ export function TaskDetailPage() {
   const [decision, setDecision] = useState<Decision | null>(null);
   const [decisionComment, setDecisionComment] = useState('');
   const [decisionError, setDecisionError] = useState('');
+  const [decisionIssues, setDecisionIssues] = useState<DetailIssue[]>([]);
   const [showCaseData, setShowCaseData] = useState(false);
+  const [selectionRowKey, setSelectionRowKey] = useState('');
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [reassignUserId, setReassignUserId] = useState('');
+  const [reassignComment, setReassignComment] = useState('');
+  const [reassignError, setReassignError] = useState('');
+  const [docToDelete, setDocToDelete] = useState<{ id: string; name: string } | null>(null);
   const initializedFor = useRef<string | null>(null);
 
   const detail = useQuery({
@@ -137,18 +158,25 @@ export function TaskDetailPage() {
 
   useEffect(() => {
     if (!task || !caseItem || initializedFor.current === task.id) return;
-    const fields = caseItem.definition.fields.filter((field) =>
-      task.formFields.includes(field.key),
-    );
+    const stageFields = fieldsForStage(caseItem.definition, task.stageKey);
+    const fields =
+      task.kind === 'info'
+        ? stageFields.filter((field) => !field.readonly && !field.hidden)
+        : stageFields.filter((field) => task.formFields.includes(field.key));
     const next: Record<string, unknown> = {};
     for (const field of fields) {
-      next[field.key] = task.data[field.key] ?? caseItem.data[field.key] ?? '';
+      next[field.key] =
+        task.data[field.key] ??
+        caseItem.data[field.key] ??
+        (field.type === 'table' || field.type === 'multiselect' ? [] : '');
     }
     setFormData(next);
     setActionComment('');
     setChatComment('');
     setFormError('');
     setFormIssues([]);
+    setSelectionRowKey('');
+    setShowCaseData(task.kind === 'approval');
     initializedFor.current = task.id;
   }, [caseItem, task]);
 
@@ -184,18 +212,37 @@ export function TaskDetailPage() {
       api.post<TaskDetailDto>(`/tasks/${id}/complete`, {
         data: formData,
         comment: actionComment.trim() || undefined,
+        selectionRowKey: selectionRowKey || undefined,
       }),
     onSuccess: (updated) => {
       applyDetail(updated);
       setFormError('');
       setFormIssues([]);
       setActionComment('');
+      setSelectionRowKey('');
       toast.success('کار تکمیل شد.', updated.task.outcome ? outcomeLabels[updated.task.outcome] : undefined);
     },
     onError: (error) => {
       setFormError(errorMessage(error));
       setFormIssues(issuesOf(error));
     },
+  });
+
+  const reassignTask = useMutation({
+    mutationFn: () =>
+      api.post<TaskDetailDto>(`/tasks/${id}/reassign`, {
+        userId: reassignUserId,
+        comment: reassignComment.trim() || undefined,
+      }),
+    onSuccess: (updated) => {
+      applyDetail(updated);
+      setReassignOpen(false);
+      setReassignUserId('');
+      setReassignComment('');
+      setReassignError('');
+      toast.success('کار واگذار شد.');
+    },
+    onError: (error) => setReassignError(errorMessage(error)),
   });
 
   const decideTask = useMutation({
@@ -209,6 +256,7 @@ export function TaskDetailPage() {
       setDecision(null);
       setDecisionComment('');
       setDecisionError('');
+      setDecisionIssues([]);
       const message =
         updated.task.outcome === 'approved'
           ? 'مرحله تأیید شد.'
@@ -219,15 +267,23 @@ export function TaskDetailPage() {
               : 'درخواست اطلاعات ثبت شد.';
       toast.success(message);
     },
-    onError: (error) => setDecisionError(errorMessage(error)),
+    onError: (error) => {
+      setDecisionError(errorMessage(error));
+      setDecisionIssues(issuesOf(error));
+    },
   });
 
   const uploadDocument = useMutation({
-    mutationFn: ({ file, documentKey }: { file: File; documentKey: string }) =>
-      api.upload<DocumentDto>(
+    mutationFn: ({ file, documentKey }: { file: File; documentKey: string }) => {
+      if (!file.size) throw new Error('فایل انتخاب‌شده خالی است.');
+      if (file.size > 10 * 1024 * 1024) {
+        throw new Error('حجم فایل نباید بیشتر از ۱۰ مگابایت باشد.');
+      }
+      return api.upload<DocumentDto>(
         `/cases/${caseItem?.id}/documents?documentKey=${encodeURIComponent(documentKey)}&taskId=${id}`,
         file,
-      ),
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task', id] });
       void queryClient.invalidateQueries({ queryKey: ['case', caseItem?.id] });
@@ -236,12 +292,25 @@ export function TaskDetailPage() {
     onError: (error) => toast.error('بارگذاری مدرک ممکن نشد.', errorMessage(error)),
   });
 
+  const deleteDocument = useMutation({
+    mutationFn: (documentId: string) =>
+      api.delete(`/cases/${caseItem?.id}/documents/${documentId}`),
+    onSuccess: () => {
+      setDocToDelete(null);
+      void queryClient.invalidateQueries({ queryKey: ['task', id] });
+      void queryClient.invalidateQueries({ queryKey: ['case', caseItem?.id] });
+      toast.success('مدرک حذف شد.');
+    },
+    onError: (error) => toast.error('حذف مدرک ممکن نشد.', errorMessage(error)),
+  });
+
   const addComment = useMutation({
     mutationFn: (body: string) => api.post<CommentDto>(`/tasks/${id}/comments`, { body }),
     onSuccess: () => {
       setChatComment('');
       setCommentError('');
       void queryClient.invalidateQueries({ queryKey: ['task', id] });
+      void queryClient.invalidateQueries({ queryKey: ['case', caseItem?.id] });
     },
     onError: (error) => setCommentError(errorMessage(error)),
   });
@@ -269,24 +338,102 @@ export function TaskDetailPage() {
   }
 
   const definition = caseItem.definition;
-  const formFields = definition.fields.filter((field) => task.formFields.includes(field.key));
-  const requiredDocs = task.requiredDocuments.map((key) => ({
-    key,
-    name: definition.documents?.find((document) => document.key === key)?.name ?? key,
-    uploaded: caseItem.documents.some((document) => document.documentKey === key),
-  }));
-  const missingDocs = requiredDocs.filter((document) => !document.uploaded);
+  const stageFields = fieldsForStage(definition, task.stageKey);
+  const formFields =
+    task.kind === 'info'
+      ? stageFields.filter((field) => !field.readonly && !field.hidden)
+      : stageFields.filter((field) => task.formFields.includes(field.key));
+  const isSelection = task.kind === 'selection';
+  const selectionDef = task.selection;
+  const selectionField = selectionDef
+    ? allDefinitionFields(definition).find(
+        (field) => field.key === selectionDef.sourceField && field.type === 'table',
+      )
+    : undefined;
+  const selectionColumns = selectionField?.columns ?? [];
+  const selectionLabelKey = selectionDef?.labelColumn;
+  const selectionLabelField = selectionLabelKey
+    ? selectionColumns.find((column) => column.key === selectionLabelKey)
+    : undefined;
+  const selectionRows =
+    selectionField && Array.isArray(caseItem.data[selectionField.key])
+      ? (caseItem.data[selectionField.key] as unknown[]).filter(
+          (row): row is Record<string, unknown> =>
+            Boolean(row) && typeof row === 'object' && !Array.isArray(row),
+        )
+      : [];
+  const requiredDocMap = new Map<string, { key: string; name: string }>();
+  for (const document of definition.documents ?? []) {
+    if (document.required && (!document.stageKey || document.stageKey === task.stageKey)) {
+      requiredDocMap.set(document.key, { key: document.key, name: document.name });
+    }
+  }
+  for (const key of task.requiredDocuments) {
+    const document = (definition.documents ?? []).find((item) => item.key === key);
+    requiredDocMap.set(key, { key, name: document?.name ?? key });
+  }
+  const requiredDocs = [...requiredDocMap.values()].map((document) => {
+    const uploaded = caseItem.documents.find(
+      (entry) => entry.documentKey === document.key,
+    );
+    return {
+      key: document.key,
+      name: document.name,
+      uploaded: Boolean(uploaded),
+      documentId: uploaded?.id,
+    };
+  });
+  const missingDocs =
+    task.kind === 'info' ? [] : requiredDocs.filter((document) => !document.uploaded);
+  const selectionSummary =
+    task.kind === 'selection' &&
+    typeof task.data.selectionLabel === 'string' &&
+    task.data.selectionLabel.trim()
+      ? task.data.selectionLabel.trim()
+      : '';
   const isActive = ['pending', 'claimed', 'waiting_info'].includes(task.status);
   const actionable = task.status === 'pending' || task.status === 'claimed';
   const isApproval = task.kind === 'approval';
   const isMine = task.assigneeId === user?.id;
+  const canReassign = isActive && hasPermission(user, 'reassignTasks');
   const canDecide = isApproval && task.canAct && !task.canClaim && actionable;
+  const stageIndex = definition.stages.findIndex((stage) => stage.key === task.stageKey);
+  const isLastStage = stageIndex >= 0 && stageIndex === definition.stages.length - 1;
+  const decisionCopy = decision
+    ? decision === 'approve' && isLastStage
+      ? {
+          title: 'تأیید و بستن پرونده',
+          description:
+            'این آخرین مرحلهٔ مسیر است؛ با تأیید، کار بسته می‌شود و پرونده کامل و بسته می‌شود.',
+          button: 'تأیید و بستن پرونده',
+        }
+      : decisionMeta[decision]
+    : null;
   const canComplete = !isApproval && task.canAct && !task.canClaim && actionable;
   const otherTasks = caseItem.tasks.filter(
     (candidate) =>
       candidate.id !== task.id &&
       ['pending', 'claimed', 'waiting_info'].includes(candidate.status),
   );
+  const allCaseFields = allDefinitionFields(definition);
+  const globalCaseKeys = new Set(definition.fields.map((field) => field.key));
+  const isEmptyCaseValue = (value: unknown): boolean =>
+    value === undefined ||
+    value === null ||
+    value === '' ||
+    (Array.isArray(value) && value.length === 0);
+  const visibleCaseFields = allCaseFields
+    .filter(
+      (field) =>
+        !field.visibleWhen ||
+        evaluateCondition(field.visibleWhen, allCaseFields, caseItem.data),
+    )
+    .filter((field) => {
+      const value = caseItem.data[field.key];
+      if (field.hidden) return !isEmptyCaseValue(value);
+      if (globalCaseKeys.has(field.key)) return true;
+      return !isEmptyCaseValue(value);
+    });
 
   return (
     <div>
@@ -343,7 +490,14 @@ export function TaskDetailPage() {
           tone="green"
           icon={<CheckCircle size={18} weight="fill" />}
           title={`این کار ${outcomeLabels[task.outcome ?? 'completed'] ?? 'بسته'} شده است.`}
-          text={task.completedAt ? `تاریخ تکمیل: ${formatDateTime(task.completedAt)}` : undefined}
+          text={
+            [
+              task.completedAt ? `تاریخ تکمیل: ${formatDateTime(task.completedAt)}` : null,
+              selectionSummary ? `گزینه انتخاب‌شده: ${selectionSummary}` : null,
+            ]
+              .filter(Boolean)
+              .join(' • ') || undefined
+          }
         />
       ) : task.status === 'cancelled' ? (
         <InfoBanner
@@ -365,31 +519,51 @@ export function TaskDetailPage() {
                 <div>
                   <h2 className="text-sm font-semibold text-ink-900">اقدام روی کار</h2>
                   <p className="mt-0.5 text-[10px] text-ink-400">
-                    {isApproval
-                      ? 'این کار نیاز به تصمیم تأیید یا رد دارد.'
-                      : task.kind === 'info'
-                        ? 'اطلاعات یا مدارک درخواستی را ارائه کنید.'
-                        : 'اطلاعات لازم را تکمیل و کار را ببندید.'}
+                    {!isActive
+                      ? 'این کار بسته شده است؛ فقط نتیجه و سابقه قابل مشاهده است.'
+                      : isApproval
+                        ? 'این کار نیاز به تصمیم تأیید یا رد دارد.'
+                        : task.kind === 'info'
+                          ? 'اطلاعات یا مدارک درخواستی را ارائه کنید.'
+                          : task.kind === 'selection'
+                            ? 'یکی از گزینه‌ها را انتخاب کنید تا اطلاعات آن در پرونده ثبت شود.'
+                            : 'اطلاعات لازم را تکمیل و کار را ببندید.'}
                   </p>
                 </div>
               </div>
-              {isMine && actionable ? (
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  loading={releaseTask.isPending}
-                  onClick={() => releaseTask.mutate()}
-                >
-                  آزاد کردن کار
-                </Button>
-              ) : null}
+              <div className="flex items-center gap-2">
+                {canReassign ? (
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    onClick={() => {
+                      setReassignOpen(true);
+                      setReassignUserId('');
+                      setReassignComment('');
+                      setReassignError('');
+                    }}
+                  >
+                    واگذاری
+                  </Button>
+                ) : null}
+                {isMine && task.status === 'claimed' ? (
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    loading={releaseTask.isPending}
+                    onClick={() => releaseTask.mutate()}
+                  >
+                    آزاد کردن کار
+                  </Button>
+                ) : null}
+              </div>
             </div>
 
             {task.canClaim && isActive ? (
               <div className="px-4 py-6">
                 <div className="rounded-xl border border-copper-200 bg-copper-50/55 px-4 py-4">
                   <div className="flex items-start gap-3">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-copper-500 text-white">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-copper-500 text-on-accent">
                       <SealCheck size={18} />
                     </span>
                     <div className="min-w-0 flex-1">
@@ -429,12 +603,29 @@ export function TaskDetailPage() {
               </div>
             ) : canDecide ? (
               <div className="px-4 py-4">
+                {requiredDocs.length ? (
+                  <div className="mb-3">
+                    <RequiredDocsPanel
+                      documents={requiredDocs}
+                      pending={uploadDocument.isPending}
+                      activeKey={uploadDocument.variables?.documentKey}
+                      onUpload={(file, documentKey) =>
+                        uploadDocument.mutate({ file, documentKey })
+                      }
+                      onRemove={
+                        caseItem.canUpload
+                          ? (document) => setDocToDelete(document)
+                          : undefined
+                      }
+                    />
+                  </div>
+                ) : null}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <DecisionButton
                     tone="green"
                     icon={<Check size={16} weight="bold" />}
-                    title="تأیید مرحله"
-                    description="ادامهٔ مسیر پرونده"
+                    title={isLastStage ? 'تأیید و بستن' : 'تأیید مرحله'}
+                    description={isLastStage ? 'پایان مسیر و بسته‌شدن پرونده' : 'ادامهٔ مسیر پرونده'}
                     onClick={() => {
                       setDecision('approve');
                       setDecisionComment('');
@@ -484,12 +675,104 @@ export function TaskDetailPage() {
                     setFormError('پیش از تکمیل، مدارک الزامی را بارگذاری کنید.');
                     return;
                   }
+                  if (isSelection && !selectionRowKey) {
+                    setFormError('برای ادامه، یکی از گزینه‌ها را انتخاب کنید.');
+                    return;
+                  }
                   completeTask.mutate();
                 }}
                 className="px-4 py-4"
               >
                 <div className="space-y-4">
-                  {formFields.length ? (
+                  {isSelection ? (
+                    selectionRows.length ? (
+                      <div className="space-y-2">
+                        {selectionRows.map((row, index) => {
+                          const rowKey = String(row._key ?? index);
+                          const selected = selectionRowKey === rowKey;
+                          return (
+                            <label
+                              key={rowKey}
+                              className={cn(
+                                'block cursor-pointer rounded-xl border px-3 py-2.5 transition',
+                                selected
+                                  ? 'border-copper-400 bg-copper-50/60 ring-1 ring-copper-200'
+                                  : 'border-line bg-paper-50/40 hover:border-copper-200',
+                              )}
+                            >
+                              <div className="flex items-start gap-2.5">
+                                <input
+                                  type="radio"
+                                  name={`selection-${task.id}`}
+                                  checked={selected}
+                                  onChange={() => {
+                                    setSelectionRowKey(rowKey);
+                                    setFormError('');
+                                  }}
+                                  disabled={completeTask.isPending}
+                                  className="mt-1 h-3.5 w-3.5 accent-copper-500"
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-xs font-semibold text-ink-900">
+                                    {selectionLabelField
+                                      ? fieldDisplayValue(
+                                          selectionLabelField,
+                                          row[selectionLabelField.key],
+                                          options.data,
+                                          caseItem.documents,
+                                        )
+                                      : `گزینه ${(index + 1).toLocaleString('fa-IR')}`}
+                                  </div>
+                                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-ink-500">
+                                    {selectionColumns
+                                      .filter(
+                                        (column) => column.key !== selectionLabelField?.key,
+                                      )
+                                      .map((column) => {
+                                        const cell = row[column.key];
+                                        return (
+                                          <span key={column.key}>
+                                            {column.label}:{' '}
+                                            {column.type === 'file' &&
+                                            typeof cell === 'string' &&
+                                            cell ? (
+                                              <a
+                                                href={`/api/documents/${cell}/download`}
+                                                className="font-medium text-copper-700 hover:underline"
+                                              >
+                                                {fieldDisplayValue(
+                                                  column,
+                                                  cell,
+                                                  options.data,
+                                                  caseItem.documents,
+                                                )}
+                                              </a>
+                                            ) : column.type === 'currency' ? (
+                                              formatMoney(cell as number | string)
+                                            ) : (
+                                              fieldDisplayValue(
+                                                column,
+                                                cell,
+                                                options.data,
+                                                caseItem.documents,
+                                              )
+                                            )}
+                                          </span>
+                                        );
+                                      })}
+                                  </div>
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-line px-4 py-4 text-center text-[11px] text-ink-400">
+                        گزینه‌ای برای انتخاب ثبت نشده است. ابتدا جدول مرحلهٔ قبل را تکمیل کنید.
+                      </div>
+                    )
+                  ) : formFields.length ? (
                     <DynamicFields
                       fields={formFields}
                       values={{ ...caseItem.data, ...formData }}
@@ -499,6 +782,9 @@ export function TaskDetailPage() {
                       options={options.data}
                       layout={definition.settings?.formLayout}
                       disabled={completeTask.isPending}
+                      caseId={caseItem.id}
+                      taskId={task.id}
+                      documents={caseItem.documents}
                     />
                   ) : (
                     <div className="rounded-lg border border-dashed border-line px-4 py-4 text-center text-[11px] text-ink-400">
@@ -507,62 +793,19 @@ export function TaskDetailPage() {
                   )}
 
                   {requiredDocs.length ? (
-                    <div className="rounded-xl border border-line bg-paper-100/50 px-3 py-3">
-                      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-ink-600">
-                        <FileArrowUp size={13} />
-                        مدارک الزامی این مرحله
-                      </div>
-                      <div className="space-y-2">
-                        {requiredDocs.map((document) => (
-                          <div
-                            key={document.key}
-                            className="flex items-center gap-2 rounded-lg border border-line bg-white/65 px-2.5 py-2"
-                          >
-                            <span
-                              className={cn(
-                                'flex h-5 w-5 shrink-0 items-center justify-center rounded-full',
-                                document.uploaded
-                                  ? 'bg-verdigris-100 text-verdigris-700'
-                                  : 'bg-stamp-50 text-stamp-500',
-                              )}
-                            >
-                              {document.uploaded ? (
-                                <CheckCircle size={12} weight="fill" />
-                              ) : (
-                                <FileText size={11} />
-                              )}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-[10px] text-ink-600">
-                              {document.name}
-                            </span>
-                            {document.uploaded ? (
-                              <span className="text-[9px] font-semibold text-verdigris-700">پیوست شد</span>
-                            ) : (
-                              <label className="focus-ring cursor-pointer rounded px-1.5 py-0.5 text-[9px] font-semibold text-copper-600 hover:bg-copper-50">
-                                {uploadDocument.isPending &&
-                                uploadDocument.variables?.documentKey === document.key ? (
-                                  <Spinner size={12} />
-                                ) : (
-                                  'بارگذاری'
-                                )}
-                                <input
-                                  type="file"
-                                  className="hidden"
-                                  disabled={uploadDocument.isPending}
-                                  onChange={(event) => {
-                                    const file = event.target.files?.[0];
-                                    if (file) {
-                                      uploadDocument.mutate({ file, documentKey: document.key });
-                                    }
-                                    event.target.value = '';
-                                  }}
-                                />
-                              </label>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    <RequiredDocsPanel
+                      documents={requiredDocs}
+                      pending={uploadDocument.isPending}
+                      activeKey={uploadDocument.variables?.documentKey}
+                      onUpload={(file, documentKey) =>
+                        uploadDocument.mutate({ file, documentKey })
+                      }
+                      onRemove={
+                        caseItem.canUpload
+                          ? (document) => setDocToDelete(document)
+                          : undefined
+                      }
+                    />
                   ) : null}
 
                   <Field label="یادداشت اقدام" hint="اختیاری؛ در سابقهٔ پرونده ثبت می‌شود.">
@@ -570,7 +813,7 @@ export function TaskDetailPage() {
                       value={actionComment}
                       onChange={(event) => setActionComment(event.target.value)}
                       placeholder="توضیح کوتاهی برای تیم یا ثبت‌کننده بنویسید…"
-                      className="min-h-20 bg-white text-xs"
+                      className="min-h-20 bg-paper-50 text-xs"
                       disabled={completeTask.isPending}
                     />
                   </Field>
@@ -600,7 +843,11 @@ export function TaskDetailPage() {
                       loading={completeTask.isPending}
                       icon={<Check size={15} weight="bold" />}
                     >
-                      {task.kind === 'info' ? 'ثبت اطلاعات' : 'تکمیل کار'}
+                      {task.kind === 'info'
+                        ? 'ثبت اطلاعات'
+                        : task.kind === 'selection'
+                          ? 'ثبت انتخاب و ادامه'
+                          : 'تکمیل کار'}
                     </Button>
                   </div>
                 </div>
@@ -611,7 +858,7 @@ export function TaskDetailPage() {
                   {task.assigneeName
                     ? `این کار در اختیار ${task.assigneeName} است.`
                     : task.candidateRole
-                      ? `این کار قابل برداشت توسط نقش «${roleLabel(task.candidateRole)}» است.`
+                      ? `این کار قابل برداشت توسط نقش «${roleName(task.candidateRole)}» است.`
                       : 'این کار در وضعیت قابل اقدام برای شما نیست.'}
                 </div>
               </div>
@@ -641,7 +888,7 @@ export function TaskDetailPage() {
             </button>
             {showCaseData ? (
               <dl className="grid gap-x-6 border-t border-line px-4 py-2 sm:grid-cols-2">
-                {definition.fields.map((field) => (
+                {visibleCaseFields.map((field) => (
                   <div
                     key={field.key}
                     className={cn(
@@ -651,7 +898,35 @@ export function TaskDetailPage() {
                   >
                     <dt className="text-[10px] text-ink-400">{field.label}</dt>
                     <dd className="mt-1 whitespace-pre-wrap text-xs leading-6 text-ink-800">
-                      {displayCaseField(field, caseItem.data[field.key], options.data)}
+                      {field.type === 'table' ? (
+                        <TaskTableValue
+                          field={field}
+                          value={caseItem.data[field.key]}
+                          options={options.data}
+                          documents={caseItem.documents}
+                        />
+                      ) : field.type === 'file' &&
+                      typeof caseItem.data[field.key] === 'string' &&
+                      caseItem.data[field.key] ? (
+                        <a
+                          href={`/api/documents/${String(caseItem.data[field.key])}/download`}
+                          className="font-medium text-copper-700 hover:underline"
+                        >
+                          {fieldDisplayValue(
+                            field,
+                            caseItem.data[field.key],
+                            options.data,
+                            caseItem.documents,
+                          )}
+                        </a>
+                      ) : (
+                        fieldDisplayValue(
+                          field,
+                          caseItem.data[field.key],
+                          options.data,
+                          caseItem.documents,
+                        )
+                      )}
                     </dd>
                   </div>
                 ))}
@@ -722,7 +997,7 @@ export function TaskDetailPage() {
                     value={chatComment}
                     onChange={(event) => setChatComment(event.target.value)}
                     placeholder="یادداشت یا توضیحی برای تیم بنویسید…"
-                    className="min-h-20 bg-white text-xs"
+                    className="min-h-20 bg-paper-50 text-xs"
                     disabled={addComment.isPending}
                   />
                   {commentError ? (
@@ -755,7 +1030,7 @@ export function TaskDetailPage() {
               className="focus-ring group block px-4 py-3.5 transition hover:bg-paper-100/60"
             >
               <div className="flex items-start gap-2.5">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-500">
                   <CaseTypeIcon icon={caseItem.caseTypeIcon} size={17} />
                 </span>
                 <div className="min-w-0 flex-1">
@@ -800,10 +1075,14 @@ export function TaskDetailPage() {
             <h2 className="text-sm font-semibold text-ink-900">مشخصات کار</h2>
             <div className="mt-3 divide-y divide-line/70">
               <MetaRow label="مرحله" value={task.stageName} />
-              <MetaRow label="مسئول" value={task.assigneeName ?? 'بدون مسئول'} icon={<User size={13} />} />
+              <MetaRow
+                label="مسئول"
+                value={taskAssigneeLabel(task, roleName)}
+                icon={<User size={13} />}
+              />
               <MetaRow
                 label="نقش پیشنهادی"
-                value={task.candidateRole ? roleLabel(task.candidateRole) : '—'}
+                value={task.candidateRole ? roleName(task.candidateRole) : '—'}
               />
               <MetaRow
                 label="مهلت"
@@ -850,9 +1129,10 @@ export function TaskDetailPage() {
         onClose={() => {
           setDecision(null);
           setDecisionError('');
+          setDecisionIssues([]);
         }}
-        title={decision ? decisionMeta[decision].title : ''}
-        description={decision ? decisionMeta[decision].description : ''}
+        title={decisionCopy?.title ?? ''}
+        description={decisionCopy?.description ?? ''}
         size="sm"
         footer={
           <>
@@ -869,8 +1149,9 @@ export function TaskDetailPage() {
               }
               loading={decideTask.isPending}
               disabled={
-                Boolean(decision && decisionMeta[decision].requireComment) &&
-                !decisionComment.trim()
+                (Boolean(decision && decisionMeta[decision].requireComment) &&
+                  !decisionComment.trim()) ||
+                (decision === 'approve' && missingDocs.length > 0)
               }
               onClick={() => {
                 if (!decision) return;
@@ -881,7 +1162,7 @@ export function TaskDetailPage() {
                 decideTask.mutate({ decision, text: decisionComment });
               }}
             >
-              {decision ? decisionMeta[decision].button : 'تأیید'}
+              {decisionCopy?.button ?? 'تأیید'}
             </Button>
           </>
         }
@@ -906,12 +1187,281 @@ export function TaskDetailPage() {
             autoFocus
           />
         </Field>
+        {decision === 'approve' && missingDocs.length ? (
+          <p className="mt-2 rounded-lg border border-ochre-100 bg-ochre-50 px-3 py-2 text-[11px] leading-6 text-ochre-600">
+            برای تأیید، ابتدا این مدارک الزامی را بارگذاری کنید:{" "}
+            {missingDocs.map((document) => document.name).join('، ')}
+          </p>
+        ) : null}
         {decisionError ? (
           <p className="mt-2 rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
             {decisionError}
           </p>
         ) : null}
+        {decisionIssues.length ? (
+          <ul className="mt-2 list-inside list-disc space-y-0.5 rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[10px] leading-5 text-stamp-600">
+            {decisionIssues.map((issue, index) => (
+              <li key={`${issue.key ?? issue.field ?? 'issue'}-${index}`}>
+                {issue.name ?? issue.message ?? issue.key ?? issue.field}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </Modal>
+
+      <Modal
+        open={reassignOpen}
+        onClose={() => {
+          setReassignOpen(false);
+          setReassignError('');
+        }}
+        title="واگذاری کار"
+        description="این کار مستقیماً به کاربر انتخاب‌شده واگذار می‌شود و در صندوق او قرار می‌گیرد."
+        size="sm"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setReassignOpen(false)}
+              disabled={reassignTask.isPending}
+            >
+              انصراف
+            </Button>
+            <Button
+              variant="ink"
+              loading={reassignTask.isPending}
+              disabled={!reassignUserId}
+              onClick={() => {
+                if (!reassignUserId) {
+                  setReassignError('کاربر مقصد را انتخاب کنید.');
+                  return;
+                }
+                reassignTask.mutate();
+              }}
+            >
+              واگذاری
+            </Button>
+          </>
+        }
+      >
+        <Field label="کاربر مقصد" required>
+          <Select
+            value={reassignUserId}
+            onChange={(event) => {
+              setReassignUserId(event.target.value);
+              setReassignError('');
+            }}
+            autoFocus
+          >
+            <option value="">انتخاب کاربر…</option>
+            {(options.data?.users ?? []).map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.name} — {roleName(candidate.role)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="یادداشت واگذاری" hint="اختیاری؛ در سابقهٔ پرونده ثبت می‌شود.">
+          <Textarea
+            value={reassignComment}
+            onChange={(event) => setReassignComment(event.target.value)}
+            placeholder="دلیل یا توضیح واگذاری…"
+            className="mt-3 min-h-20"
+          />
+        </Field>
+        {reassignError ? (
+          <p className="mt-2 rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
+            {reassignError}
+          </p>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(docToDelete)}
+        onClose={() => setDocToDelete(null)}
+        title="حذف مدرک"
+        description="فایل از پرونده حذف می‌شود؛ برای جایگزینی، پس از حذف فایل جدید را بارگذاری کنید."
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDocToDelete(null)}>
+              انصراف
+            </Button>
+            <Button
+              variant="danger"
+              loading={deleteDocument.isPending}
+              onClick={() => docToDelete && deleteDocument.mutate(docToDelete.id)}
+            >
+              حذف مدرک
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm leading-7 text-ink-600">
+          «{docToDelete?.name}» حذف شود؟ این کار قابل بازگشت نیست.
+        </p>
+      </Modal>
+    </div>
+  );
+}
+
+function TaskTableValue({
+  field,
+  value,
+  options,
+  documents,
+}: {
+  field: FieldDef;
+  value: unknown;
+  options?: Parameters<typeof fieldDisplayValue>[2];
+  documents?: DocumentDto[];
+}) {
+  const rows = Array.isArray(value)
+    ? value.filter(
+        (row): row is Record<string, unknown> =>
+          Boolean(row) && typeof row === 'object' && !Array.isArray(row),
+      )
+    : [];
+  const columns = field.columns ?? [];
+  if (!rows.length || !columns.length) return <>—</>;
+  return (
+    <div className="overflow-x-auto rounded-lg border border-line">
+      <table className="min-w-full border-collapse text-[11px]">
+        <thead>
+          <tr className="bg-paper-100/70 text-ink-500">
+            {columns.map((column) => (
+              <th
+                key={column.key}
+                className="whitespace-nowrap border-b border-line px-2 py-1.5 text-start font-medium"
+              >
+                {column.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={String(row._key ?? index)} className="align-top">
+              {columns.map((column) => {
+                const cell = row[column.key];
+                return (
+                  <td
+                    key={column.key}
+                    className="border-b border-line/60 px-2 py-1.5 text-ink-800"
+                  >
+                    {column.type === 'file' && typeof cell === 'string' && cell ? (
+                      <a
+                        href={`/api/documents/${cell}/download`}
+                        className="font-medium text-copper-700 hover:underline"
+                      >
+                        {fieldDisplayValue(column, cell, options, documents)}
+                      </a>
+                    ) : column.type === 'currency' ? (
+                      formatMoney(cell as number | string)
+                    ) : (
+                      fieldDisplayValue(column, cell, options, documents)
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RequiredDocsPanel({
+  documents,
+  pending,
+  activeKey,
+  onUpload,
+  onRemove,
+}: {
+  documents: { key: string; name: string; uploaded: boolean; documentId?: string }[];
+  pending: boolean;
+  activeKey?: string;
+  onUpload: (file: File, documentKey: string) => void;
+  onRemove?: (document: { id: string; name: string }) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-line bg-paper-100/50 px-3 py-3">
+      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold text-ink-600">
+        <FileArrowUp size={13} />
+        مدارک الزامی این مرحله
+      </div>
+      <div className="space-y-2">
+        {documents.map((document) => (
+          <div
+            key={document.key}
+            className="flex items-center gap-2 rounded-lg border border-line bg-paper-50/65 px-2.5 py-2"
+          >
+            <span
+              className={cn(
+                'flex h-5 w-5 shrink-0 items-center justify-center rounded-full',
+                document.uploaded
+                  ? 'bg-verdigris-100 text-verdigris-700'
+                  : 'bg-stamp-50 text-stamp-500',
+              )}
+            >
+              {document.uploaded ? (
+                <CheckCircle size={12} weight="fill" />
+              ) : (
+                <FileText size={11} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[10px] text-ink-600">
+              {document.name}
+            </span>
+            {document.uploaded ? (
+              <div className="flex items-center gap-1">
+                {document.documentId ? (
+                  <a
+                    href={`/api/documents/${document.documentId}/download`}
+                    className="focus-ring inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold text-verdigris-700 hover:bg-verdigris-50"
+                    aria-label="دانلود مدرک"
+                  >
+                    <DownloadSimple size={11} />
+                    دانلود
+                  </a>
+                ) : (
+                  <span className="text-[9px] font-semibold text-verdigris-700">
+                    پیوست شد
+                  </span>
+                )}
+                {onRemove && document.documentId ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onRemove({ id: document.documentId!, name: document.name })
+                    }
+                    className="focus-ring flex h-6 w-6 items-center justify-center rounded text-ink-400 hover:bg-stamp-50 hover:text-stamp-600"
+                    aria-label="حذف مدرک"
+                    title="حذف"
+                  >
+                    <Trash size={12} />
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <label className="focus-ring cursor-pointer rounded px-1.5 py-0.5 text-[9px] font-semibold text-copper-600 hover:bg-copper-50">
+                {pending && activeKey === document.key ? <Spinner size={12} /> : 'بارگذاری'}
+                <input
+                  type="file"
+                  className="hidden"
+                  disabled={pending}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) onUpload(file, document.key);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -943,7 +1493,7 @@ function DecisionButton({
     >
       <span
         className={cn(
-          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border bg-white',
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border bg-paper-50',
           tone === 'green' && 'border-verdigris-100 text-verdigris-600',
           tone === 'amber' && 'border-ochre-100 text-ochre-600',
           tone === 'red' && 'border-stamp-100 text-stamp-600',
@@ -1017,32 +1567,6 @@ function MetaRow({ label, value, icon }: { label: string; value: string; icon?: 
       </span>
     </div>
   );
-}
-
-function displayCaseField(
-  field: FieldDef,
-  value: unknown,
-  options: ReturnType<typeof useMasterOptions>['data'],
-): string {
-  if (value === undefined || value === null || value === '') return '—';
-  if (field.type === 'checkbox') return value ? 'بله' : 'خیر';
-  if (field.type === 'party') {
-    return options?.parties.find((party) => party.id === value)?.name ?? String(value);
-  }
-  if (field.type === 'item') {
-    return options?.items.find((item) => item.id === value)?.name ?? String(value);
-  }
-  if (field.type === 'warehouse') {
-    return options?.warehouses.find((warehouse) => warehouse.id === value)?.name ?? String(value);
-  }
-  if (field.type === 'currency') {
-    const amount = Number(value);
-    return Number.isFinite(amount) ? `${amount.toLocaleString('fa-IR')} ریال` : String(value);
-  }
-  if (field.type === 'select') {
-    return field.options?.find((option) => option.value === value)?.label ?? String(value);
-  }
-  return String(value);
 }
 
 function colorForName(name: string): string {

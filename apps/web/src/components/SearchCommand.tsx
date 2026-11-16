@@ -10,7 +10,7 @@ import {
   Tray,
   UsersThree,
 } from '@phosphor-icons/react';
-import { api } from '@/lib/api';
+import { api, errorMessage } from '@/lib/api';
 import { Modal, Spinner } from './ui';
 import { CaseTypeIcon } from './domain';
 
@@ -65,9 +65,14 @@ export function SearchCommand({
           value={term}
           onChange={(event) => setTerm(event.target.value)}
           placeholder="شماره پرونده، عنوان کار، طرف حساب یا کالا…"
-          className="focus-ring h-12 w-full rounded-xl border border-line bg-white px-3 ps-10 text-sm text-ink-900 placeholder:text-ink-400 focus:border-copper-400"
+          className="focus-ring h-12 w-full rounded-xl border border-line bg-paper-50 px-3 ps-10 text-sm text-ink-900 placeholder:text-ink-400 focus:border-copper-400"
           autoFocus
         />
+        {results.isFetching && !results.isLoading ? (
+          <span className="pointer-events-none absolute inset-y-0 end-3 my-auto flex items-center">
+            <Spinner size={14} />
+          </span>
+        ) : null}
       </div>
 
       <div className="mt-4 min-h-56">
@@ -81,6 +86,18 @@ export function SearchCommand({
         ) : results.isLoading ? (
           <div className="flex items-center justify-center py-16">
             <Spinner />
+          </div>
+        ) : results.isError ? (
+          <div className="rounded-xl border border-stamp-100 bg-stamp-50/60 px-5 py-10 text-center">
+            <p className="text-sm font-semibold text-ink-800">جستجو ممکن نشد.</p>
+            <p className="mt-1 text-xs text-ink-400">{errorMessage(results.error)}</p>
+            <button
+              type="button"
+              onClick={() => void results.refetch()}
+              className="focus-ring mt-3 rounded-lg border border-line bg-paper-50 px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:border-ink-300"
+            >
+              تلاش دوباره
+            </button>
           </div>
         ) : !hasResults ? (
           <div className="rounded-xl border border-dashed border-line px-5 py-10 text-center">
@@ -123,7 +140,7 @@ export function SearchCommand({
                     icon={<UsersThree size={17} />}
                     title={item.name}
                     meta={`${item.code} · ${item.kind === 'supplier' ? 'تأمین‌کننده' : 'مشتری'}`}
-                    onClick={() => go('/data?tab=parties')}
+                    onClick={() => go(`/data?tab=party&record=${item.id}`)}
                   />
                 ))}
               </ResultGroup>
@@ -135,8 +152,12 @@ export function SearchCommand({
                     key={item.id}
                     icon={<Package size={17} />}
                     title={item.name}
-                    meta={`${item.sku} · موجودی ${(item.stock ?? 0).toLocaleString('fa-IR')} ${item.unit}`}
-                    onClick={() => go('/data?tab=items')}
+                    meta={`${item.sku} · موجودی ${
+                      item.stock === undefined
+                        ? 'نامشخص'
+                        : `${item.stock.toLocaleString('fa-IR')} ${item.unit}`
+                    }`}
+                    onClick={() => go(`/data?tab=item&record=${item.id}`)}
                   />
                 ))}
               </ResultGroup>
@@ -163,7 +184,7 @@ function ResultGroup({ title, children }: { title: string; children: ReactNode }
   return (
     <section>
       <h3 className="eyebrow mb-1.5 px-1">{title}</h3>
-      <div className="overflow-hidden rounded-xl border border-line bg-white/55">{children}</div>
+      <div className="overflow-hidden rounded-xl border border-line bg-paper-50/55">{children}</div>
     </section>
   );
 }

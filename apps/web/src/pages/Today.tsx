@@ -42,14 +42,14 @@ export function TodayPage() {
   return (
     <div>
       <PageHeader
-        eyebrow={`دفتر امروز · ${todayLabel()}`}
-        title={`${greeting()}، ${firstName}.`}
-        description="تصویر امروز تیم؛ کارهایی که منتظر شماست و پرونده‌هایی که در جریان‌اند."
+        eyebrow={`میز کار / ${todayLabel()}`}
+        title="نمای عملیات امروز"
+        description={`${greeting()}، ${firstName}. کارهای باز، موعدهای نزدیک و وضعیت جریان کار را در یک نگاه ببینید.`}
         actions={
           <>
             <Link
               to="/inbox"
-              className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-white/55 px-3.5 text-xs font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-white"
+              className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-line bg-paper-50/55 px-3.5 text-xs font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-paper-50"
             >
               <Tray size={16} />
               صندوق کار
@@ -76,7 +76,7 @@ export function TodayPage() {
         <TodaySkeleton />
       ) : (
         <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <Card className="grid grid-cols-2 divide-x divide-y divide-line overflow-hidden sm:grid-cols-4 sm:divide-y-0">
             <MetricCard
               label="پرونده‌های باز"
               value={data.metrics.openCases}
@@ -106,14 +106,14 @@ export function TodayPage() {
               accent="amber"
               suffix="ساعت"
             />
-          </div>
+          </Card>
 
           {data.metrics.overdueTasks > 0 ? (
             <Link
-              to="/inbox"
+              to="/inbox?scope=all"
               className="focus-ring flex items-center gap-3 rounded-xl border border-stamp-100 bg-stamp-50/70 px-4 py-3 transition hover:bg-stamp-50"
             >
-              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white text-stamp-600">
+              <span className="flex h-8 w-8 items-center justify-center rounded-md bg-paper-50 text-stamp-600">
                 <WarningCircle size={17} weight="fill" />
               </span>
               <div className="min-w-0 flex-1">
@@ -291,21 +291,11 @@ function MetricCard({
   suffix?: string;
 }) {
   return (
-    <Card className="relative overflow-hidden px-4 py-4">
-      <div
-        className={cn(
-          'absolute inset-x-0 top-0 h-0.5',
-          accent === 'ink' && 'bg-ink-800',
-          accent === 'copper' && 'bg-copper-500',
-          accent === 'green' && 'bg-verdigris-500',
-          accent === 'amber' && 'bg-ochre-400',
-        )}
-      />
-      <div className="flex items-start justify-between gap-2">
-        <span className="text-[11px] font-medium text-ink-500">{label}</span>
+    <div className="px-4 py-3">
+      <div className="flex items-center gap-2 text-[10px] font-medium text-ink-500">
         <span
           className={cn(
-            'flex h-8 w-8 items-center justify-center rounded-md',
+            'flex h-6 w-6 items-center justify-center rounded',
             accent === 'ink' && 'bg-paper-100 text-ink-700',
             accent === 'copper' && 'bg-copper-50 text-copper-600',
             accent === 'green' && 'bg-verdigris-50 text-verdigris-600',
@@ -314,15 +304,16 @@ function MetricCard({
         >
           {icon}
         </span>
+        {label}
       </div>
       <div className="mt-2 flex items-baseline gap-1.5">
-        <span className="font-mono text-[30px] font-medium leading-none tracking-tight text-ink-950">
+        <span className="font-mono text-[24px] font-semibold leading-none tracking-tight text-ink-950">
           {faNum(value)}
         </span>
-        {suffix ? <span className="text-[10px] text-ink-400">{suffix}</span> : null}
+        {suffix ? <span className="text-[9px] text-ink-400">{suffix}</span> : null}
       </div>
-      <div className="mt-3 text-[10px] text-ink-400">{meta}</div>
-    </Card>
+      <div className="mt-1.5 text-[9px] text-ink-400">{meta}</div>
+    </div>
   );
 }
 
@@ -335,12 +326,12 @@ function WeeklyBars({ data }: { data: DashboardDto['weekly'] }) {
           <div className="flex h-24 w-full items-end justify-center gap-0.5">
             <div
               className="w-[38%] rounded-t-sm bg-ink-800/85"
-              style={{ height: `${Math.max(3, (day.created / max) * 100)}%` }}
+              style={{ height: `${day.created ? Math.max(3, (day.created / max) * 100) : 0}%` }}
               title={`${formatShortDate(day.day)}: ${faNum(day.created)} ثبت`}
             />
             <div
               className="w-[38%] rounded-t-sm bg-verdigris-500/85"
-              style={{ height: `${Math.max(3, (day.completed / max) * 100)}%` }}
+              style={{ height: `${day.completed ? Math.max(3, (day.completed / max) * 100) : 0}%` }}
               title={`${formatShortDate(day.day)}: ${faNum(day.completed)} تکمیل`}
             />
           </div>

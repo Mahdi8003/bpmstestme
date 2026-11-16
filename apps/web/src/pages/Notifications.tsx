@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { NotificationDto, NotificationsDto } from '@ravand/shared';
 import {
+  ArrowClockwise,
   Bell,
   BellRinging,
   Check,
@@ -12,15 +13,23 @@ import {
 } from '@phosphor-icons/react';
 import { api, errorMessage } from '@/lib/api';
 import { faNum, formatDateTime } from '@/lib/format';
-import { Button, Card, EmptyState, Skeleton, Tabs, cn } from '@/components/ui';
+import { Button, Card, EmptyState, Skeleton, Spinner, Tabs, cn } from '@/components/ui';
 import { PageHeader } from '@/components/PageHeader';
 import { useToast } from '@/components/ToastProvider';
 
+const PAGE_SIZE = 50;
+
 const typeIcons: Record<string, ReactNode> = {
   'task.assigned': <BellRinging size={16} />,
+  'task.reassigned': <BellRinging size={16} />,
   'task.info_requested': <FileText size={16} />,
+  'task.completed': <Check size={16} />,
+  'task.approved': <SealCheck size={16} />,
   'case.completed': <SealCheck size={16} />,
   'case.rejected': <WarningCircle size={16} />,
+  'case.cancelled': <WarningCircle size={16} />,
+  'case.returned': <ArrowClockwise size={16} />,
+  'case.comment': <FileText size={16} />,
   'case.info_provided': <Check size={16} />,
   'sla.breached': <WarningCircle size={16} />,
 };
@@ -31,12 +40,22 @@ export function NotificationsPage() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const notifications = useQuery({
+  const notifications = useInfiniteQuery({
     queryKey: ['notifications', filter],
-    queryFn: () =>
-      api.get<NotificationsDto>(`/notifications?limit=100${filter === 'unread' ? '&unread=true' : ''}`),
+    queryFn: ({ pageParam }) =>
+      api.get<NotificationsDto>(
+        `/notifications?limit=${PAGE_SIZE}&offset=${pageParam}${
+          filter === 'unread' ? '&unread=true' : ''
+        }`,
+      ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.items.length === PAGE_SIZE ? allPages.length * PAGE_SIZE : undefined,
     placeholderData: (previous) => previous,
   });
+
+  const items = notifications.data?.pages.flatMap((page) => page.items) ?? [];
+  const unread = notifications.data?.pages[0]?.unread ?? 0;
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['notifications'] });
@@ -45,6 +64,7 @@ export function NotificationsPage() {
   const markOne = useMutation({
     mutationFn: (id: string) => api.post<NotificationDto>(`/notifications/${id}/read`),
     onSuccess: invalidate,
+    onError: (error) => toast.error('ثبت خوانده‌شدن ممکن نشد.', errorMessage(error)),
   });
 
   const markAll = useMutation({
@@ -73,7 +93,7 @@ export function NotificationsPage() {
             size="sm"
             icon={<Check size={14} />}
             loading={markAll.isPending}
-            disabled={!notifications.data?.unread}
+            disabled={!unread}
             onClick={() => markAll.mutate()}
           >
             همه را خواندم
@@ -88,12 +108,13 @@ export function NotificationsPage() {
             onChange={setFilter}
             items={[
               { value: 'all', label: 'همه' },
-              { value: 'unread', label: 'خوانده‌نشده', count: notifications.data?.unread },
+              { value: 'unread', label: 'خوانده‌نشده', count: unread },
             ]}
             className="border-0"
           />
-          <span className="pe-2 font-mono text-[10px] text-ink-400">
-            {faNum(notifications.data?.items.length ?? 0)}
+          <span className="flex items-center gap-1.5 pe-2 font-mono text-[10px] text-ink-400">
+            {notifications.isFetching && !notifications.isLoading ? <Spinner size={11} /> : null}
+            {faNum(items.length)}
           </span>
         </div>
 
@@ -117,9 +138,9 @@ export function NotificationsPage() {
               </div>
             ))}
           </div>
-        ) : notifications.data?.items.length ? (
+        ) : items.length ? (
           <div className="divide-y divide-line/70">
-            {notifications.data.items.map((notification) => {
+            {items.map((notification) => {
               const unread = !notification.readAt;
               return (
                 <button
@@ -136,7 +157,7 @@ export function NotificationsPage() {
                       'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border',
                       unread
                         ? 'border-copper-200 bg-copper-50 text-copper-600'
-                        : 'border-line bg-white text-ink-400',
+                        : 'border-line bg-paper-50 text-ink-400',
                     )}
                   >
                     {typeIcons[notification.type] ?? <Bell size={16} />}
@@ -169,6 +190,18 @@ export function NotificationsPage() {
                 </button>
               );
             })}
+            {notifications.hasNextPage ? (
+              <div className="border-t border-line px-4 py-3 text-center">
+                <Button
+                  variant="paper"
+                  size="sm"
+                  loading={notifications.isFetchingNextPage}
+                  onClick={() => void notifications.fetchNextPage()}
+                >
+                  نمایش اعلان‌های بیشتر
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <EmptyState

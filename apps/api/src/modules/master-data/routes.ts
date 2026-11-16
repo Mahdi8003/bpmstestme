@@ -1,25 +1,30 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  itemSchema,
-  partySchema,
-  stockMovementSchema,
-  warehouseSchema,
+  masterDataRecordSchema,
+  masterDataTypeSchema,
+  masterDataTypeUpdateSchema,
 } from '@ravand/shared';
 import { authenticate, authOf } from '../../plugins/auth.js';
-import { requireRole } from '../../lib/auth.js';
+import { requirePermission } from '../../lib/auth.js';
 import {
-  createItem,
-  createParty,
-  createStockMovement,
-  createWarehouse,
+  createMasterDataRecord,
+  createMasterDataType,
+  deleteMasterDataRecord,
+  deleteMasterDataType,
+  deleteSystemDataRecord,
+  duplicateMasterDataRecord,
+  getMasterDataType,
   getMasterOptions,
   listItems,
+  listMasterDataRecords,
+  listMasterDataTypes,
   listParties,
   listStockMovements,
   listWarehouses,
-  updateItem,
-  updateParty,
+  updateMasterDataRecord,
+  updateMasterDataType,
+  updateSystemDataRecord,
 } from './service.js';
 
 const partyQuerySchema = z.object({
@@ -39,12 +44,127 @@ const movementQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(500).optional().default(100),
 });
 
-const partyUpdateSchema = partySchema.partial();
-const itemUpdateSchema = itemSchema.partial();
+const masterRecordQuerySchema = z.object({
+  q: z.string().max(200).optional(),
+  limit: z.coerce.number().min(1).max(2000).optional().default(200),
+  offset: z.coerce.number().min(0).optional().default(0),
+});
+
+const typeParamsSchema = z.object({ id: z.string().uuid() });
+const recordParamsSchema = z.object({ id: z.string().uuid(), recordId: z.string().uuid() });
+const idParamsSchema = z.object({ id: z.string().uuid() });
 
 export async function registerMasterDataRoutes(app: FastifyInstance): Promise<void> {
   app.get('/master/options', { preHandler: authenticate }, async (request) => {
     return getMasterOptions(authOf(request));
+  });
+
+  app.get('/master/types', { preHandler: authenticate }, async (request) => {
+    return listMasterDataTypes(authOf(request));
+  });
+
+  app.post('/master/types', { preHandler: authenticate }, async (request, reply) => {
+    const auth = authOf(request);
+    requirePermission(auth, 'manageMasterData');
+    const input = masterDataTypeSchema.parse(request.body);
+    const created = await createMasterDataType(auth, input);
+    reply.code(201);
+    return created;
+  });
+
+  app.get('/master/types/:id', { preHandler: authenticate }, async (request) => {
+    const auth = authOf(request);
+    const { id } = typeParamsSchema.parse(request.params);
+    return getMasterDataType(auth, id);
+  });
+
+  app.patch('/master/types/:id', { preHandler: authenticate }, async (request) => {
+    const auth = authOf(request);
+    requirePermission(auth, 'manageMasterData');
+    const { id } = typeParamsSchema.parse(request.params);
+    const input = masterDataTypeUpdateSchema.parse(request.body);
+    return updateMasterDataType(auth, id, input);
+  });
+
+  app.delete('/master/types/:id', { preHandler: authenticate }, async (request, reply) => {
+    const auth = authOf(request);
+    requirePermission(auth, 'manageMasterData');
+    const { id } = typeParamsSchema.parse(request.params);
+    await deleteMasterDataType(auth, id);
+    reply.code(204);
+    return null;
+  });
+
+  app.get('/master/types/:id/records', { preHandler: authenticate }, async (request) => {
+    const auth = authOf(request);
+    const { id } = typeParamsSchema.parse(request.params);
+    const query = masterRecordQuerySchema.parse(request.query);
+    return listMasterDataRecords(auth, id, query);
+  });
+
+  app.post('/master/types/:id/records', { preHandler: authenticate }, async (request, reply) => {
+    const auth = authOf(request);
+    requirePermission(auth, 'manageMasterData');
+    const { id } = typeParamsSchema.parse(request.params);
+    const input = masterDataRecordSchema.parse(request.body);
+    const created = await createMasterDataRecord(auth, id, input);
+    reply.code(201);
+    return created;
+  });
+
+  app.patch(
+    '/master/types/:id/records/:recordId',
+    { preHandler: authenticate },
+    async (request) => {
+      const auth = authOf(request);
+      requirePermission(auth, 'manageMasterData');
+      const { id, recordId } = recordParamsSchema.parse(request.params);
+      const input = masterDataRecordSchema.parse(request.body);
+      return updateSystemDataRecord(auth, id, recordId, input);
+    },
+  );
+
+  app.post(
+    '/master/types/:id/records/:recordId/duplicate',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = authOf(request);
+      requirePermission(auth, 'manageMasterData');
+      const { id, recordId } = recordParamsSchema.parse(request.params);
+      const created = await duplicateMasterDataRecord(auth, id, recordId);
+      reply.code(201);
+      return created;
+    },
+  );
+
+  app.patch('/master/records/:id', { preHandler: authenticate }, async (request) => {
+    const auth = authOf(request);
+    requirePermission(auth, 'manageMasterData');
+    const { id } = idParamsSchema.parse(request.params);
+    const input = masterDataRecordSchema.parse(request.body);
+    return updateMasterDataRecord(auth, id, input);
+  });
+
+  app.delete(
+    '/master/types/:id/records/:recordId',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = authOf(request);
+      requirePermission(auth, 'manageMasterData');
+      const { id, recordId } = recordParamsSchema.parse(request.params);
+      await deleteSystemDataRecord(auth, id, recordId);
+      reply.code(204);
+      return null;
+    },
+  );
+
+  app.delete('/master/records/:id', { preHandler: authenticate }, async (request, reply) => {
+    const auth = authOf(request);
+    requirePermission(auth, 'manageMasterData');
+    const { id } = idParamsSchema.parse(request.params);
+    await deleteMasterDataRecord(auth, id);
+    reply.code(204);
+    return null;
   });
 
   app.get('/parties', { preHandler: authenticate }, async (request) => {
@@ -53,69 +173,19 @@ export async function registerMasterDataRoutes(app: FastifyInstance): Promise<vo
     return listParties(auth, query);
   });
 
-  app.post('/parties', { preHandler: authenticate }, async (request, reply) => {
-    const auth = authOf(request);
-    requireRole(auth, ['admin', 'builder', 'manager', 'procurement']);
-    const input = partySchema.parse(request.body);
-    const created = await createParty(auth, input);
-    reply.code(201);
-    return created;
-  });
-
-  app.patch('/parties/:id', { preHandler: authenticate }, async (request) => {
-    const auth = authOf(request);
-    requireRole(auth, ['admin', 'builder', 'manager', 'procurement']);
-    const { id } = request.params as { id: string };
-    return updateParty(auth, id, partyUpdateSchema.parse(request.body));
-  });
-
   app.get('/items', { preHandler: authenticate }, async (request) => {
     const auth = authOf(request);
     const query = itemQuerySchema.parse(request.query);
     return listItems(auth, query);
   });
 
-  app.post('/items', { preHandler: authenticate }, async (request, reply) => {
-    const auth = authOf(request);
-    requireRole(auth, ['admin', 'builder', 'manager', 'procurement', 'warehouse']);
-    const input = itemSchema.parse(request.body);
-    const created = await createItem(auth, input);
-    reply.code(201);
-    return created;
-  });
-
-  app.patch('/items/:id', { preHandler: authenticate }, async (request) => {
-    const auth = authOf(request);
-    requireRole(auth, ['admin', 'builder', 'manager', 'procurement', 'warehouse']);
-    const { id } = request.params as { id: string };
-    return updateItem(auth, id, itemUpdateSchema.parse(request.body));
-  });
-
   app.get('/warehouses', { preHandler: authenticate }, async (request) => {
     return listWarehouses(authOf(request));
-  });
-
-  app.post('/warehouses', { preHandler: authenticate }, async (request, reply) => {
-    const auth = authOf(request);
-    requireRole(auth, ['admin', 'builder', 'manager', 'warehouse']);
-    const input = warehouseSchema.parse(request.body);
-    const created = await createWarehouse(auth, input);
-    reply.code(201);
-    return created;
   });
 
   app.get('/stock/movements', { preHandler: authenticate }, async (request) => {
     const auth = authOf(request);
     const query = movementQuerySchema.parse(request.query);
     return listStockMovements(auth, query);
-  });
-
-  app.post('/stock/movements', { preHandler: authenticate }, async (request, reply) => {
-    const auth = authOf(request);
-    requireRole(auth, ['admin', 'manager', 'warehouse']);
-    const input = stockMovementSchema.parse(request.body);
-    await createStockMovement(auth, input);
-    reply.code(201);
-    return { ok: true };
   });
 }

@@ -10,13 +10,17 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type {
   CaseStatus,
   CaseTypeDefinition,
   CaseTypeStatus,
   CasePriority,
+  FieldDef,
+  MasterEntity,
   RoleKey,
+  RolePermission,
   TaskKind,
   TaskOutcome,
   TaskStatus,
@@ -31,6 +35,29 @@ export const tenants = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('tenants_slug_unique').on(table.slug)],
+);
+
+export const roles = pgTable(
+  'roles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    color: text('color').notNull().default('#1E3A5F'),
+    permissions: jsonb('permissions').$type<RolePermission[]>().notNull().default([]),
+    isSystem: boolean('is_system').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(100),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('roles_tenant_key_unique').on(table.tenantId, table.key),
+    index('roles_tenant_idx').on(table.tenantId),
+  ],
 );
 
 export const users = pgTable(
@@ -150,6 +177,12 @@ export const cases = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     assigneeId: uuid('assignee_id').references(() => users.id, { onDelete: 'set null' }),
+    parentCaseId: uuid('parent_case_id').references((): AnyPgColumn => cases.id, {
+      onDelete: 'set null',
+    }),
+    rootCaseId: uuid('root_case_id').references((): AnyPgColumn => cases.id, {
+      onDelete: 'set null',
+    }),
     dueAt: timestamp('due_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -160,6 +193,8 @@ export const cases = pgTable(
     index('cases_tenant_status_idx').on(table.tenantId, table.status),
     index('cases_tenant_type_idx').on(table.tenantId, table.caseTypeId),
     index('cases_tenant_created_idx').on(table.tenantId, table.createdAt),
+    index('cases_tenant_parent_idx').on(table.tenantId, table.parentCaseId),
+    index('cases_tenant_root_idx').on(table.tenantId, table.rootCaseId),
   ],
 );
 
@@ -335,6 +370,7 @@ export const parties = pgTable(
     phone: text('phone'),
     taxId: text('tax_id'),
     address: text('address'),
+    extra: jsonb('extra').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -357,6 +393,7 @@ export const items = pgTable(
     unitCost: numeric('unit_cost', { precision: 18, scale: 2 }).notNull().default('0'),
     reorderPoint: numeric('reorder_point', { precision: 18, scale: 4 }).notNull().default('0'),
     active: boolean('active').notNull().default(true),
+    extra: jsonb('extra').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -375,9 +412,59 @@ export const warehouses = pgTable(
     code: text('code').notNull(),
     name: text('name').notNull(),
     location: text('location'),
+    extra: jsonb('extra').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('warehouses_tenant_code_unique').on(table.tenantId, table.code)],
+);
+
+export const masterDataTypes = pgTable(
+  'master_data_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    icon: text('icon').notNull().default('database'),
+    entity: text('entity').$type<MasterEntity>().notNull().default('custom'),
+    isSystem: boolean('is_system').notNull().default(false),
+    isHierarchical: boolean('is_hierarchical').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(100),
+    fields: jsonb('fields').$type<FieldDef[]>().notNull(),
+    titleField: text('title_field'),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('master_data_types_tenant_key_unique').on(table.tenantId, table.key),
+    index('master_data_types_tenant_idx').on(table.tenantId),
+  ],
+);
+
+export const masterDataRecords = pgTable(
+  'master_data_records',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    typeId: uuid('type_id')
+      .notNull()
+      .references(() => masterDataTypes.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('master_data_records_tenant_type_idx').on(table.tenantId, table.typeId),
+    index('master_data_records_tenant_title_idx').on(table.tenantId, table.title),
+  ],
 );
 
 export const stockMovements = pgTable(
@@ -397,6 +484,7 @@ export const stockMovements = pgTable(
     quantity: numeric('quantity', { precision: 18, scale: 4 }).notNull(),
     reference: text('reference'),
     note: text('note'),
+    extra: jsonb('extra').$type<Record<string, unknown>>().notNull().default({}),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),

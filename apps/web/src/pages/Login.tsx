@@ -1,7 +1,17 @@
 import { useState, type FormEvent } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Check, Eye, EyeSlash, LockKey, SealCheck } from '@phosphor-icons/react';
+import {
+  ArrowLeft,
+  Check,
+  Eye,
+  EyeSlash,
+  LockKey,
+  Moon,
+  SealCheck,
+  Sun,
+} from '@phosphor-icons/react';
 import { useAuth } from '@/lib/auth';
+import { useTheme } from '@/lib/theme';
 import { BrandMark } from '@/components/BrandMark';
 import { Button, Field, Input, Spinner } from '@/components/ui';
 
@@ -9,8 +19,10 @@ export function LoginPage() {
   const { user, isLoading, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [email, setEmail] = useState('admin@ravand.local');
-  const [password, setPassword] = useState('Demo1234!');
+  const showDemo = import.meta.env.DEV;
+  const { theme, toggleTheme } = useTheme();
+  const [email, setEmail] = useState(showDemo ? 'admin@ravand.local' : '');
+  const [password, setPassword] = useState(showDemo ? 'Demo1234!' : '');
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -52,7 +64,18 @@ export function LoginPage() {
             <BrandMark size={32} className="text-ink-900" />
             <span className="display text-xl font-bold text-ink-900">روند</span>
           </div>
-          <span className="text-[10px] tracking-[0.12em] text-ink-400">دفتر جریان کار</span>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[10px] tracking-[0.12em] text-ink-400">دفتر جریان کار</span>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="focus-ring flex h-8 w-8 items-center justify-center rounded-lg border border-line text-ink-500 transition-colors hover:bg-paper-200 hover:text-ink-800"
+              aria-label={theme === 'dark' ? 'روشن کردن تم' : 'تیره کردن تم'}
+              title={theme === 'dark' ? 'تم روشن' : 'تم تیره'}
+            >
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+          </div>
         </div>
 
         <div className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center py-12">
@@ -118,19 +141,21 @@ export function LoginPage() {
             </Button>
           </form>
 
-          <div className="mt-6 rounded-xl border border-dashed border-line bg-paper-50/60 px-4 py-3">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-700">
-              <SealCheck size={14} className="text-verdigris-600" />
-              حساب نمایشی
+          {showDemo ? (
+            <div className="mt-6 rounded-xl border border-dashed border-line bg-paper-50/60 px-4 py-3">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-700">
+                <SealCheck size={14} className="text-verdigris-600" />
+                حساب نمایشی
+              </div>
+              <div className="mt-1.5 grid gap-1 font-mono text-[11px] text-ink-500" dir="ltr">
+                <span>admin@ravand.local</span>
+                <span>Demo1234!</span>
+              </div>
+              <p className="mt-2 text-[10px] leading-5 text-ink-400">
+                ایمیل و رمز در فرم پیش‌فرض پر شده‌اند؛ کافی است وارد شوید.
+              </p>
             </div>
-            <div className="mt-1.5 grid gap-1 font-mono text-[11px] text-ink-500" dir="ltr">
-              <span>admin@ravand.local</span>
-              <span>Demo1234!</span>
-            </div>
-            <p className="mt-2 text-[10px] leading-5 text-ink-400">
-              ایمیل و رمز در فرم پیش‌فرض پر شده‌اند؛ کافی است وارد شوید.
-            </p>
-          </div>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2 text-[10px] text-ink-400">
@@ -139,7 +164,7 @@ export function LoginPage() {
         </div>
       </div>
 
-      <div className="relative hidden overflow-hidden bg-ink-950 lg:block">
+      <div className="brand-panel relative hidden overflow-hidden bg-ink-950 lg:block">
         <div className="grid-paper absolute inset-0 opacity-[0.11]" />
         <div className="absolute -left-24 top-16 h-72 w-72 rounded-full border border-copper-400/10" />
         <div className="absolute -left-10 top-28 h-48 w-48 rounded-full border border-copper-400/10" />
@@ -197,7 +222,7 @@ function FlowStep({
     <div className="relative flex gap-4 pb-7 last:pb-0">
       <div className="relative flex w-7 shrink-0 justify-center">
         {!done ? (
-          <span className="absolute bottom-0 top-7 w-px bg-white/10" aria-hidden />
+          <span className="absolute bottom-0 top-7 w-px bg-paper-50/10" aria-hidden />
         ) : null}
         <span
           className={

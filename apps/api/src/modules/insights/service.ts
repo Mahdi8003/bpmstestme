@@ -37,12 +37,17 @@ async function weeklySeries(
       ),
     )
     .groupBy(sql`date_trunc('day', ${cases.completedAt})`);
+  const dayKey = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+      date.getDate(),
+    ).padStart(2, '0')}`;
+
   const createdMap = new Map(createdRows.map((row) => [row.day, Number(row.count)]));
   const completedMap = new Map(completedRows.map((row) => [row.day, Number(row.count)]));
   return Array.from({ length: 7 }, (_, index) => {
     const date = new Date(start);
     date.setDate(start.getDate() + index);
-    const day = date.toISOString().slice(0, 10);
+    const day = dayKey(date);
     return {
       day,
       created: createdMap.get(day) ?? 0,

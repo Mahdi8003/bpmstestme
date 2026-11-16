@@ -2,12 +2,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   type ReactNode,
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AuthSession, TenantSummary, UserSummary } from '@ravand/shared';
-import { api, ApiError } from './api';
+import { api, ApiError, UNAUTHORIZED_EVENT } from './api';
 
 interface AuthContextValue {
   user: UserSummary | null;
@@ -50,6 +51,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       queryClient.clear();
       queryClient.setQueryData(['auth'], null);
     }
+  }, [queryClient]);
+
+  useEffect(() => {
+    const onUnauthorized = () => {
+      queryClient.clear();
+      queryClient.setQueryData(['auth'], null);
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
   }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -7,26 +7,36 @@ import {
   FIELD_TYPE_LABELS,
   FIELD_WIDTHS,
   FIELD_WIDTH_LABELS,
-  ROLE_KEYS,
   ROLE_LABELS,
+  allDefinitionFields,
+  fieldsForStage,
   type CaseTypeDefinition,
   type CaseTypeDetail,
+  type CaseTypeSummary,
   type Condition,
   type DocumentDef,
   type FieldDef,
   type FieldType,
+  type HealthIssue,
   type HealthResult,
+  type MasterDataTypeDto,
   type NotificationEvent,
+  type RoleDto,
   type RoleKey,
   type StageDef,
+  type StageTransition,
   type TaskDef,
+  type UserSummary,
 } from '@ravand/shared';
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowRight,
   ArrowUp,
+  CaretDown,
   CheckCircle,
-  Circle,
+  Eye,
+  FilePlus,
   FloppyDisk,
   PencilSimple,
   Plus,
@@ -37,6 +47,7 @@ import {
 } from '@phosphor-icons/react';
 import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { hasPermission, useRoles } from '@/lib/roles';
 import { faNum } from '@/lib/format';
 import {
   Button,
@@ -54,11 +65,12 @@ import {
 } from '@/components/ui';
 import { PageHeader } from '@/components/PageHeader';
 import { CaseTypeIcon } from '@/components/domain';
+import { CaseFormPreview } from '@/components/CaseFormPreview';
 import { useMasterOptions } from '@/components/DynamicFields';
 import { useToast } from '@/components/ToastProvider';
 
 const KEY_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]*$/;
-const FIELD_TYPE_OPTIONS = FIELD_TYPES;
+const FIELD_TYPE_OPTIONS = FIELD_TYPES.filter((type) => type !== 'rollup');
 
 const notificationEventLabels: Record<NotificationEvent, string> = {
   'case.created': 'ثبت پرونده جدید',
@@ -75,16 +87,44 @@ const assigneeTypeLabels = {
   manager: 'مدیر پرونده',
 } as const;
 
+const transitionTypeLabels: Record<StageTransition['type'], string> = {
+  stage: 'رفتن به مرحله',
+  case_type: 'شروع فرآیند دیگر',
+  end: 'پایان پرونده',
+};
+
+const conditionOperatorLabels: Record<Condition['op'], string> = {
+  eq: '=',
+  neq: '≠',
+  gt: '>',
+  gte: '≥',
+  lt: '<',
+  lte: '≤',
+  contains: 'شامل',
+};
+
 type AssigneeOption = keyof typeof assigneeTypeLabels;
 type BuilderTab = 'general' | 'fields' | 'stages' | 'documents' | 'settings';
 
-type FieldEditor = { index: number | null; draft: FieldDef };
+type FieldEditor = {
+  scope: 'case' | 'stage';
+  stageIndex?: number;
+  index: number | null;
+  draft: FieldDef;
+};
 type TaskEditor = { stageIndex: number; taskIndex: number | null; draft: TaskDef };
+type TransitionEditor = {
+  stageIndex: number;
+  index: number | null;
+  draft: StageTransition;
+};
 type DocumentEditor = { index: number | null; draft: DocumentDef };
 type DeleteTarget =
   | { type: 'field'; index: number }
+  | { type: 'stage_field'; stageIndex: number; index: number }
   | { type: 'stage'; index: number }
   | { type: 'task'; stageIndex: number; taskIndex: number }
+  | { type: 'transition'; stageIndex: number; index: number }
   | { type: 'document'; index: number };
 
 function uniqueKey(base: string, keys: Set<string>) {
@@ -106,6 +146,11 @@ function countTasks(definition: CaseTypeDefinition) {
   return definition.stages.reduce((total, stage) => total + stage.tasks.length, 0);
 }
 
+function roleDisplay(key: string | undefined, roles: RoleDto[]): string {
+  if (!key) return 'نقش تعیین‌نشده';
+  return roles.find((role) => role.key === key)?.name ?? ROLE_LABELS[key] ?? key;
+}
+
 function KeyChip({ children }: { children: ReactNode }) {
   return (
     <span className="rounded border border-line bg-paper-100 px-1.5 py-0.5 font-mono text-[9px] text-ink-400" dir="ltr">
@@ -118,12 +163,14 @@ function RoleChecklist({
   label,
   hint,
   value,
+  roles,
   disabled,
   onChange,
 }: {
   label: string;
   hint: string;
   value: RoleKey[];
+  roles: RoleDto[];
   disabled: boolean;
   onChange: (roles: RoleKey[]) => void;
 }) {
@@ -132,28 +179,31 @@ function RoleChecklist({
       <div className="text-[10px] font-medium text-ink-700">{label}</div>
       <div className="mt-1 text-[9px] text-ink-400">{hint}</div>
       <div className="mt-1.5 flex flex-wrap gap-1">
-        {ROLE_KEYS.map((role) => {
-          const selected = value.includes(role);
+        {roles.map((role) => {
+          const selected = value.includes(role.key);
           return (
             <button
-              key={role}
+              key={role.key}
               type="button"
               disabled={disabled}
               onClick={() =>
                 onChange(
-                  selected ? value.filter((candidate) => candidate !== role) : [...value, role],
+                  selected
+                    ? value.filter((candidate) => candidate !== role.key)
+                    : [...value, role.key],
                 )
               }
               className={cn(
                 'focus-ring rounded-full border px-2 py-0.5 text-[9px] font-medium transition',
                 selected
                   ? 'border-ink-900 bg-ink-900 text-paper-50'
-                  : 'border-line bg-white text-ink-500 hover:border-ink-300',
+                  : 'border-line bg-paper-50 text-ink-500 hover:border-ink-300',
                 disabled ? 'cursor-not-allowed opacity-50' : undefined,
               )}
               aria-pressed={selected}
+              title={role.key}
             >
-              {ROLE_LABELS[role]}
+              {role.name}
             </button>
           );
         })}
@@ -167,7 +217,13 @@ export function BuilderEditorPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [meta, setMeta] = useState({ name: '', description: '', icon: 'file', referencePrefix: '' });
+  const [meta, setMeta] = useState({
+    name: '',
+    description: '',
+    icon: 'file',
+    referencePrefix: '',
+    ownerId: null as string | null,
+  });
   const [definition, setDefinition] = useState<CaseTypeDefinition>({ fields: [], stages: [] });
   const [tab, setTab] = useState<BuilderTab>('general');
   const [dirty, setDirty] = useState(false);
@@ -176,16 +232,30 @@ export function BuilderEditorPage() {
   const [publishing, setPublishing] = useState(false);
   const [fieldEditor, setFieldEditor] = useState<FieldEditor | null>(null);
   const [taskEditor, setTaskEditor] = useState<TaskEditor | null>(null);
+  const [transitionEditor, setTransitionEditor] = useState<TransitionEditor | null>(null);
   const [documentEditor, setDocumentEditor] = useState<DocumentEditor | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [editorError, setEditorError] = useState('');
+  const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [flashTarget, setFlashTarget] = useState<string | null>(null);
   const initializedId = useRef<string | null>(null);
-  const canBuild = Boolean(user && ['admin', 'builder', 'manager'].includes(user.role));
+  const healthRef = useRef<HTMLHeadingElement>(null);
+  const masterOptions = useMasterOptions();
+  const rolesQuery = useRoles();
+  const roleOptions = rolesQuery.data ?? [];
+  const canBuild = hasPermission(user, 'buildProcesses');
 
   const detail = useQuery({
     queryKey: ['case-type', id],
     queryFn: () => api.get<CaseTypeDetail>(`/case-types/${id}`),
     enabled: Boolean(id) && canBuild,
+  });
+  const caseTypes = useQuery({
+    queryKey: ['case-types'],
+    queryFn: () => api.get<CaseTypeSummary[]>('/case-types'),
+    enabled: canBuild,
+    staleTime: 60_000,
   });
 
   useEffect(() => {
@@ -196,20 +266,28 @@ export function BuilderEditorPage() {
       description: detail.data.description,
       icon: detail.data.icon,
       referencePrefix: detail.data.referencePrefix,
+      ownerId: detail.data.ownerId,
     });
     setDefinition(structuredClone(detail.data.definition));
     setDirty(false);
     setHealth(null);
+    setExpandedStage(null);
   }, [detail.data]);
 
   const save = useMutation({
-    mutationFn: () =>
-      api.put<CaseTypeDetail>(`/case-types/${id}`, {
+    mutationFn: () => {
+      const name = meta.name.trim();
+      if (name.length < 2) throw new Error('نام فرآیند باید حداقل ۲ نویسه باشد.');
+      const prefix = meta.referencePrefix.trim();
+      if (prefix.length < 2) throw new Error('پیشوند شماره پرونده باید بین ۲ تا ۸ نویسه باشد.');
+      return api.put<CaseTypeDetail>(`/case-types/${id}`, {
         ...meta,
-        name: meta.name.trim(),
+        name,
         description: meta.description.trim(),
+        referencePrefix: prefix,
         definition,
-      }),
+      });
+    },
     onSuccess: (saved) => {
       queryClient.setQueryData(['case-type', id], saved);
       setDirty(false);
@@ -230,10 +308,47 @@ export function BuilderEditorPage() {
     setHealth(null);
   };
 
+  useEffect(() => {
+    if (!dirty) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const onClickCapture = (event: MouseEvent) => {
+      const anchor = (event.target as HTMLElement | null)?.closest('a');
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (
+        !href ||
+        href.startsWith('#') ||
+        anchor.target === '_blank' ||
+        event.metaKey ||
+        event.ctrlKey ||
+        href === window.location.pathname
+      ) {
+        return;
+      }
+      if (!window.confirm('تغییرات ذخیره نشده‌اند. از این صفحه خارج می‌شوید؟')) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    document.addEventListener('click', onClickCapture, true);
+    return () => {
+      window.removeEventListener('beforeunload', beforeUnload);
+      document.removeEventListener('click', onClickCapture, true);
+    };
+  }, [dirty]);
+
   const openNewField = () => {
-    const key = uniqueKey('field', new Set(definition.fields.map((field) => field.key)));
+    const key = uniqueKey(
+      'field',
+      new Set(allDefinitionFields(definition).map((field) => field.key)),
+    );
     setEditorError('');
     setFieldEditor({
+      scope: 'case',
       index: null,
       draft: { key, label: '', type: 'text', required: false, placeholder: '', help: '' },
     });
@@ -243,7 +358,35 @@ export function BuilderEditorPage() {
     const field = definition.fields[index];
     if (!field) return;
     setEditorError('');
-    setFieldEditor({ index, draft: structuredClone(field) });
+    setFieldEditor({ scope: 'case', index, draft: structuredClone(field) });
+  };
+
+  const openNewStageField = (stageIndex: number) => {
+    const stage = definition.stages[stageIndex];
+    if (!stage) return;
+    const key = uniqueKey(
+      `${stage.key}_field`,
+      new Set(allDefinitionFields(definition).map((field) => field.key)),
+    );
+    setEditorError('');
+    setFieldEditor({
+      scope: 'stage',
+      stageIndex,
+      index: null,
+      draft: { key, label: '', type: 'text', required: false, placeholder: '', help: '' },
+    });
+  };
+
+  const openStageField = (stageIndex: number, index: number) => {
+    const field = definition.stages[stageIndex]?.fields?.[index];
+    if (!field) return;
+    setEditorError('');
+    setFieldEditor({
+      scope: 'stage',
+      stageIndex,
+      index,
+      draft: structuredClone(field),
+    });
   };
 
   const saveField = () => {
@@ -257,9 +400,17 @@ export function BuilderEditorPage() {
       setEditorError('نام فیلد را وارد کنید.');
       return;
     }
+    const previousKey =
+      fieldEditor.scope === 'case'
+        ? fieldEditor.index === null
+          ? undefined
+          : definition.fields[fieldEditor.index]?.key
+        : fieldEditor.index === null
+          ? undefined
+          : definition.stages[fieldEditor.stageIndex ?? -1]?.fields?.[fieldEditor.index]?.key;
     if (
-      definition.fields.some(
-        (field, index) => index !== fieldEditor.index && field.key === draft.key,
+      allDefinitionFields(definition).some(
+        (field) => field.key === draft.key && field.key !== previousKey,
       )
     ) {
       setEditorError('این کلید قبلاً برای فیلد دیگری استفاده شده است.');
@@ -269,42 +420,161 @@ export function BuilderEditorPage() {
       setEditorError('فیلد شرط نمایش را انتخاب کنید.');
       return;
     }
-    const options = ['select', 'radio', 'multiselect'].includes(draft.type)
+    if (draft.type === 'master' && !draft.masterTypeKey) {
+      setEditorError('نوع داده پایه مقصد را انتخاب کنید.');
+      return;
+    }
+    if (draft.type === 'table') {
+      const columns = draft.columns ?? [];
+      if (!columns.length) {
+        setEditorError('برای جدول حداقل یک ستون تعریف کنید.');
+        return;
+      }
+      const columnKeys = new Set<string>();
+      for (const column of columns) {
+        if (!KEY_PATTERN.test(column.key)) {
+          setEditorError('کلید هر ستون باید با حرف لاتین شروع شود و فقط حرف، عدد و زیرخط داشته باشد.');
+          return;
+        }
+        if (!column.label.trim()) {
+          setEditorError('برچسب همهٔ ستون‌ها را وارد کنید.');
+          return;
+        }
+        if (columnKeys.has(column.key)) {
+          setEditorError('کلید ستون‌های جدول باید یکتا باشد.');
+          return;
+        }
+        columnKeys.add(column.key);
+        if (column.type === 'table') {
+          setEditorError('ستون جدول نمی‌تواند از نوع جدول باشد.');
+          return;
+        }
+        if (
+          ['select', 'radio', 'multiselect'].includes(column.type) &&
+          !(column.options ?? []).some(
+            (option) => option.label.trim() && option.value.trim(),
+          )
+        ) {
+          setEditorError('برای ستون‌های انتخابی حداقل یک گزینه معتبر تعریف کنید.');
+          return;
+        }
+        if (column.type === 'master' && !column.masterTypeKey) {
+          setEditorError('نوع داده پایه ستون‌های سفارشی را انتخاب کنید.');
+          return;
+        }
+      }
+      if (
+        draft.minRows !== undefined &&
+        draft.maxRows !== undefined &&
+        draft.minRows > draft.maxRows
+      ) {
+        setEditorError('حداقل ردیف نمی‌تواند از حداکثر ردیف بیشتر باشد.');
+        return;
+      }
+    }
+    const needsOptions = ['select', 'radio', 'multiselect'].includes(draft.type);
+    const options = needsOptions
       ? (draft.options ?? []).filter((option) => option.label.trim() && option.value.trim())
       : undefined;
+    if (needsOptions) {
+      if (!options?.length) {
+        setEditorError('برای این نوع فیلد، حداقل یک گزینه با برچسب و مقدار لازم است.');
+        return;
+      }
+      const seenValues = new Set<string>();
+      for (const option of options) {
+        if (seenValues.has(option.value.trim())) {
+          setEditorError('مقدار گزینه‌ها باید یکتا باشد.');
+          return;
+        }
+        seenValues.add(option.value.trim());
+      }
+    }
+    if (draft.min !== undefined && draft.max !== undefined && draft.min > draft.max) {
+      setEditorError('حداقل مقدار نمی‌تواند از حداکثر مقدار بیشتر باشد.');
+      return;
+    }
     const nextField: FieldDef = {
       ...draft,
+      required: draft.hidden || draft.readonly ? false : draft.required,
       label: draft.label.trim(),
       placeholder: draft.placeholder?.trim() || undefined,
       help: draft.help?.trim() || undefined,
       options,
+      columns:
+        draft.type === 'table'
+          ? (draft.columns ?? []).map((column) => ({
+              ...column,
+              key: column.key.trim(),
+              label: column.label.trim(),
+            }))
+          : undefined,
+      minRows: draft.type === 'table' ? (draft.minRows ?? 0) : undefined,
+      maxRows: draft.type === 'table' ? draft.maxRows : undefined,
+      addLabel:
+        draft.type === 'table' ? draft.addLabel?.trim() || undefined : undefined,
     };
     updateDefinition((current) => {
-      const previousKey =
-        fieldEditor.index === null ? undefined : current.fields[fieldEditor.index]?.key;
-      if (previousKey && previousKey !== nextField.key) {
+      const currentPreviousKey =
+        fieldEditor.scope === 'case'
+          ? fieldEditor.index === null
+            ? undefined
+            : current.fields[fieldEditor.index]?.key
+          : fieldEditor.index === null
+            ? undefined
+            : current.stages[fieldEditor.stageIndex ?? -1]?.fields?.[fieldEditor.index]?.key;
+      if (currentPreviousKey && currentPreviousKey !== nextField.key) {
         for (const stage of current.stages) {
+          for (const field of stage.fields ?? []) {
+            if (field.visibleWhen?.field === currentPreviousKey) {
+              field.visibleWhen.field = nextField.key;
+            }
+          }
           for (const task of stage.tasks) {
             task.formFields = task.formFields?.map((key) =>
-              key === previousKey ? nextField.key : key,
+              key === currentPreviousKey ? nextField.key : key,
             );
-            if (task.condition?.field === previousKey) task.condition.field = nextField.key;
+            if (task.condition?.field === currentPreviousKey) {
+              task.condition.field = nextField.key;
+            }
+            if (task.selection) {
+              if (task.selection.sourceField === currentPreviousKey) {
+                task.selection.sourceField = nextField.key;
+              }
+              task.selection.copy = task.selection.copy?.map((copy) =>
+                copy.to === currentPreviousKey ? { ...copy, to: nextField.key } : copy,
+              );
+            }
+          }
+          for (const transition of stage.transitions ?? []) {
+            if (transition.condition?.field === currentPreviousKey) {
+              transition.condition.field = nextField.key;
+            }
           }
         }
         for (const field of current.fields) {
-          if (field.visibleWhen?.field === previousKey) {
+          if (field.visibleWhen?.field === currentPreviousKey) {
             field.visibleWhen.field = nextField.key;
           }
         }
-        if (current.settings?.titleField === previousKey) {
+        if (current.settings?.titleField === currentPreviousKey) {
           current.settings.titleField = nextField.key;
         }
-        if (current.settings?.descriptionField === previousKey) {
+        if (current.settings?.descriptionField === currentPreviousKey) {
           current.settings.descriptionField = nextField.key;
         }
       }
-      if (fieldEditor.index === null) current.fields.push(nextField);
-      else current.fields[fieldEditor.index] = nextField;
+      if (fieldEditor.scope === 'stage') {
+        const stage = current.stages[fieldEditor.stageIndex ?? -1];
+        if (!stage) return current;
+        stage.fields ??= [];
+        if (fieldEditor.index === null) stage.fields.push(nextField);
+        else stage.fields[fieldEditor.index] = nextField;
+      } else if (fieldEditor.index === null) {
+        current.fields.push(nextField);
+      } else {
+        current.fields[fieldEditor.index] = nextField;
+      }
       return current;
     });
     setFieldEditor(null);
@@ -374,6 +644,42 @@ export function BuilderEditorPage() {
       setEditorError('فیلد شرط اجرا را انتخاب کنید.');
       return;
     }
+    if (draft.kind === 'selection') {
+      const selection = draft.selection;
+      if (!selection?.sourceField) {
+        setEditorError('برای کار انتخاب، جدول منبع را انتخاب کنید.');
+        return;
+      }
+      const source = allDefinitionFields(definition).find(
+        (field) => field.key === selection.sourceField && field.type === 'table',
+      );
+      if (!source) {
+        setEditorError('جدول منبع کار انتخاب معتبر نیست.');
+        return;
+      }
+      const columnKeys = new Set((source.columns ?? []).map((column) => column.key));
+      if (selection.labelColumn && !columnKeys.has(selection.labelColumn)) {
+        setEditorError('ستون عنوان گزینه معتبر نیست.');
+        return;
+      }
+      const allFieldKeys = new Set(allDefinitionFields(definition).map((field) => field.key));
+      const targets = new Set<string>();
+      for (const copy of selection.copy ?? []) {
+        if (!columnKeys.has(copy.from)) {
+          setEditorError('یکی از ستون‌های انتخابی برای کپی معتبر نیست.');
+          return;
+        }
+        if (!allFieldKeys.has(copy.to)) {
+          setEditorError('یکی از فیلدهای مقصد کپی معتبر نیست.');
+          return;
+        }
+        if (targets.has(copy.to)) {
+          setEditorError('هر فیلد مقصد فقط یک بار می‌تواند انتخاب شود.');
+          return;
+        }
+        targets.add(copy.to);
+      }
+    }
     const nextTask: TaskDef = {
       ...draft,
       name: draft.name.trim(),
@@ -382,6 +688,7 @@ export function BuilderEditorPage() {
       formFields: draft.formFields?.length ? draft.formFields : undefined,
       requiredDocuments: draft.requiredDocuments?.length ? draft.requiredDocuments : undefined,
       condition: draft.condition?.field ? draft.condition : undefined,
+      selection: draft.kind === 'selection' ? draft.selection : undefined,
     };
     updateDefinition((current) => {
       const stage = current.stages[taskEditor.stageIndex];
@@ -391,6 +698,70 @@ export function BuilderEditorPage() {
       return current;
     });
     setTaskEditor(null);
+  };
+
+  const openNewTransition = (stageIndex: number) => {
+    const stage = definition.stages[stageIndex];
+    if (!stage) return;
+    const fallbackStage = definition.stages[stageIndex + 1];
+    setEditorError('');
+    setTransitionEditor({
+      stageIndex,
+      index: null,
+      draft: {
+        type: fallbackStage ? 'stage' : 'end',
+        stageKey: fallbackStage?.key,
+      },
+    });
+  };
+
+  const openTransition = (stageIndex: number, index: number) => {
+    const transition = definition.stages[stageIndex]?.transitions?.[index];
+    if (!transition) return;
+    setEditorError('');
+    setTransitionEditor({ stageIndex, index, draft: structuredClone(transition) });
+  };
+
+  const saveTransition = () => {
+    if (!transitionEditor) return;
+    const draft = transitionEditor.draft;
+    if (draft.type === 'stage') {
+      const target = definition.stages.find((stage) => stage.key === draft.stageKey);
+      if (!target) {
+        setEditorError("مرحله مقصد باید معتبر باشد.");
+        return;
+      }
+      if (
+        target.key === definition.stages[transitionEditor.stageIndex]?.key
+      ) {
+        setEditorError("مرحله مقصد نباید همان مرحله فعلی باشد.");
+        return;
+      }
+    }
+    if (draft.type === 'case_type' && !draft.caseTypeKey) {
+      setEditorError("برای شروع فرآیند دیگر، فرآیند مقصد را انتخاب کنید.");
+      return;
+    }
+    if (draft.condition && !draft.condition.field) {
+      setEditorError('برای شرط اجرا، فیلد را انتخاب کنید.');
+      return;
+    }
+    const nextTransition: StageTransition = {
+      ...draft,
+      label: draft.label?.trim() || undefined,
+      condition: draft.condition?.field ? draft.condition : undefined,
+      stageKey: draft.type === 'stage' ? draft.stageKey : undefined,
+      caseTypeKey: draft.type === 'case_type' ? draft.caseTypeKey : undefined,
+    };
+    updateDefinition((current) => {
+      const stage = current.stages[transitionEditor.stageIndex];
+      if (!stage) return current;
+      stage.transitions ??= [];
+      if (transitionEditor.index === null) stage.transitions.push(nextTransition);
+      else stage.transitions[transitionEditor.index] = nextTransition;
+      return current;
+    });
+    setTransitionEditor(null);
   };
 
   const addStage = () => {
@@ -417,6 +788,7 @@ export function BuilderEditorPage() {
       current.stages.push(stage);
       return current;
     });
+    setExpandedStage(stageKey);
   };
 
   const updateStage = (index: number, patch: Partial<StageDef>) => {
@@ -489,14 +861,34 @@ export function BuilderEditorPage() {
   const confirmDelete = () => {
     if (!deleteTarget) return;
     updateDefinition((current) => {
-      if (deleteTarget.type === 'field') {
-        const removed = current.fields[deleteTarget.index];
-        current.fields.splice(deleteTarget.index, 1);
+      if (deleteTarget.type === 'field' || deleteTarget.type === 'stage_field') {
+        let removed: FieldDef | undefined;
+        if (deleteTarget.type === 'stage_field') {
+          const stage = current.stages[deleteTarget.stageIndex];
+          removed = stage?.fields?.[deleteTarget.index];
+          stage?.fields?.splice(deleteTarget.index, 1);
+        } else {
+          removed = current.fields[deleteTarget.index];
+          current.fields.splice(deleteTarget.index, 1);
+        }
         if (removed) {
           for (const stage of current.stages) {
+            for (const field of stage.fields ?? []) {
+              if (field.visibleWhen?.field === removed.key) delete field.visibleWhen;
+            }
             for (const task of stage.tasks) {
               task.formFields = task.formFields?.filter((key) => key !== removed.key);
               if (task.condition?.field === removed.key) delete task.condition;
+              if (task.selection?.sourceField === removed.key) {
+                delete task.selection;
+              } else if (task.selection?.copy) {
+                task.selection.copy = task.selection.copy.filter(
+                  (copy) => copy.to !== removed.key,
+                );
+              }
+            }
+            for (const transition of stage.transitions ?? []) {
+              if (transition.condition?.field === removed.key) delete transition.condition;
             }
           }
           for (const field of current.fields) {
@@ -507,12 +899,19 @@ export function BuilderEditorPage() {
             delete current.settings.descriptionField;
           }
         }
+      } else if (deleteTarget.type === 'transition') {
+        current.stages[deleteTarget.stageIndex]?.transitions?.splice(deleteTarget.index, 1);
       } else if (deleteTarget.type === 'stage') {
         const removed = current.stages[deleteTarget.index];
         current.stages.splice(deleteTarget.index, 1);
         if (removed) {
           for (const document of current.documents ?? []) {
             if (document.stageKey === removed.key) delete document.stageKey;
+          }
+          for (const stage of current.stages) {
+            stage.transitions = stage.transitions?.filter(
+              (transition) => transition.stageKey !== removed.key,
+            );
           }
         }
       } else if (deleteTarget.type === 'task') {
@@ -559,7 +958,13 @@ export function BuilderEditorPage() {
       const result = health ?? (await runHealthCheck());
       if (!result) return;
       if (!result.ok) {
-        toast.error('فرآیند هنوز خطای ساختاری دارد.', 'موارد خطا را در کارت سلامت برطرف کنید.');
+        const errors = result.issues.filter((issue) => issue.level === 'error').length;
+        const warnings = result.issues.length - errors;
+        healthRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast.error(
+          'انتشار انجام نشد.',
+          `${faNum(errors)} خطا و ${faNum(warnings)} هشدار در کارت «اعتبارسنجی ساختار» پیدا شد؛ ابتدا آن‌ها را برطرف کنید.`,
+        );
         return;
       }
       if (dirty) await save.mutateAsync();
@@ -617,12 +1022,96 @@ export function BuilderEditorPage() {
     );
   }
 
-  const readOnly = detail.data.status === 'archived';
+  const readOnly =
+    detail.data.status === 'archived' ||
+    (user?.role !== 'admin' && detail.data.ownerId !== user?.id);
   const stages = definition.stages;
   const taskTotal = countTasks(definition);
   const documents = definition.documents ?? [];
   const currentIndex = taskEditor?.stageIndex ?? 0;
   const currentStage = stages[currentIndex];
+
+  const focusElement = (elementId: string) => {
+    window.setTimeout(() => {
+      const element = document.getElementById(elementId);
+      if (!element) return;
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setFlashTarget(elementId);
+      window.setTimeout(
+        () => setFlashTarget((current) => (current === elementId ? null : current)),
+        1800,
+      );
+    }, 80);
+  };
+
+  const issueTarget = (
+    issue: HealthIssue,
+  ): { tab: BuilderTab; label: string; elementId?: string; stageKey?: string } | null => {
+    const path = issue.path;
+    if (!path) return null;
+    const [root, second] = path.split('.');
+    if (root === 'fields') {
+      return second
+        ? { tab: 'fields', label: 'فرم', elementId: `builder-field-${second}` }
+        : { tab: 'fields', label: 'فرم' };
+    }
+    if (root === 'stages') {
+      if (!second) return { tab: 'stages', label: 'گردش کار' };
+      if (/^\d+$/.test(second)) {
+        const stage = stages[Number(second)];
+        return stage
+          ? { tab: 'stages', label: 'گردش کار', elementId: `builder-stage-${stage.key}` }
+          : { tab: 'stages', label: 'گردش کار' };
+      }
+      return {
+        tab: 'stages',
+        label: 'گردش کار',
+        elementId: `builder-stage-${second}`,
+        stageKey: second,
+      };
+    }
+    if (root === 'documents') {
+      return second
+        ? { tab: 'documents', label: 'مدارک', elementId: `builder-document-${second}` }
+        : { tab: 'documents', label: 'مدارک' };
+    }
+    if (root === 'settings') return { tab: 'settings', label: 'تنظیمات' };
+    return null;
+  };
+
+  const jumpToIssue = (issue: HealthIssue) => {
+    const target = issueTarget(issue);
+    if (!target) return;
+    setTab(target.tab);
+    if (target.stageKey) setExpandedStage(target.stageKey);
+    if (target.elementId) focusElement(target.elementId);
+  };
+
+  const nextStep = !definition.fields.length
+    ? {
+        tab: 'fields' as BuilderTab,
+        title: 'فرم پرونده را بسازید',
+        body: 'ثبت‌کننده باید حداقل یک فیلد برای وارد کردن اطلاعات داشته باشد.',
+        cta: 'افزودن فیلد',
+        focusId: undefined as string | undefined,
+      }
+    : !stages.length
+      ? {
+          tab: 'stages' as BuilderTab,
+          title: 'حداقل یک مرحله اضافه کنید',
+          body: 'پرونده بدون مرحله مسیری برای حرکت ندارد.',
+          cta: 'افزودن مرحله',
+          focusId: undefined as string | undefined,
+        }
+      : !stages[0].tasks.length
+        ? {
+            tab: 'stages' as BuilderTab,
+            title: `برای مرحلهٔ «${stages[0].name}» کار تعریف کنید`,
+            body: 'مرحلهٔ اول بدون کار آغاز نمی‌شود؛ کارِ مسئول مشخص می‌کند چه کسی چه کاری انجام دهد.',
+            cta: 'دیدن مرحله',
+            focusId: `builder-stage-${stages[0].key}` as string | undefined,
+          }
+        : null;
 
   return (
     <div>
@@ -666,12 +1155,29 @@ export function BuilderEditorPage() {
             <Button
               variant="paper"
               size="sm"
+              icon={<Eye size={14} />}
+              onClick={() => setPreviewOpen(true)}
+            >
+              پیش‌نمایش فرم
+            </Button>
+            <Button
+              variant="paper"
+              size="sm"
               icon={<ShieldCheck size={14} />}
               loading={checking}
               onClick={() => void runHealthCheck()}
             >
               بررسی سلامت
             </Button>
+            {detail.data.status === 'published' ? (
+              <Link
+                to={`/cases/new?type=${detail.data.id}`}
+                className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-paper-50/55 px-3.5 text-xs font-semibold text-ink-600 hover:bg-paper-50"
+              >
+                <FilePlus size={14} />
+                ثبت پرونده آزمایشی
+              </Link>
+            ) : null}
             {!readOnly ? (
               <>
                 <Button
@@ -702,8 +1208,32 @@ export function BuilderEditorPage() {
       {readOnly ? (
         <div className="mb-5 flex items-start gap-2 rounded-lg border border-line bg-paper-200/50 px-4 py-3 text-[11px] leading-6 text-ink-500">
           <WarningCircle size={15} className="mt-0.5 shrink-0" />
-          این فرآیند بایگانی شده است و فقط برای مشاهده در دسترس است. برای تغییر، از نسخهٔ آن کپی
-          بگیرید.
+          {detail.data.status === 'archived'
+            ? 'این فرآیند بایگانی شده است و فقط برای مشاهده در دسترس است. برای تغییر، از نسخهٔ آن کپی بگیرید.'
+            : 'شما مالک این فرآیند نیستید و فقط می‌توانید آن را مشاهده کنید. برای ویرایش، مالک فرآیند باید این فرآیند را به شما واگذار کند.'}
+        </div>
+      ) : null}
+
+      {!readOnly && nextStep ? (
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-copper-200 bg-copper-50/50 px-3.5 py-2.5">
+          <span className="rounded bg-paper-50 px-1.5 py-0.5 text-[9px] font-semibold text-copper-700">
+            قدم بعدی
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold text-copper-800">{nextStep.title}</p>
+            <p className="mt-0.5 text-[9px] leading-5 text-copper-700/80">{nextStep.body}</p>
+          </div>
+          <Button
+            variant="paper"
+            size="sm"
+            className="h-7 px-2.5 text-[10px]"
+            onClick={() => {
+              setTab(nextStep.tab);
+              if (nextStep.focusId) focusElement(nextStep.focusId);
+            }}
+          >
+            {nextStep.cta}
+          </Button>
         </div>
       ) : null}
 
@@ -716,7 +1246,7 @@ export function BuilderEditorPage() {
               items={[
                 { value: 'general', label: 'اطلاعات کلی' },
                 { value: 'fields', label: 'فرم', count: definition.fields.length },
-                { value: 'stages', label: 'مراحل', count: stages.length },
+                { value: 'stages', label: 'گردش کار', count: stages.length },
                 { value: 'documents', label: 'مدارک', count: documents.length },
                 { value: 'settings', label: 'تنظیمات' },
               ]}
@@ -728,6 +1258,7 @@ export function BuilderEditorPage() {
               <GeneralTab
                 meta={meta}
                 caseKey={detail.data.key}
+                users={masterOptions.data?.users ?? []}
                 readOnly={readOnly}
                 onChange={updateMeta}
               />
@@ -749,9 +1280,16 @@ export function BuilderEditorPage() {
                   ) : null}
                 </div>
                 {definition.fields.length ? (
-                  <div className="divide-y divide-line/70 rounded-lg border border-line bg-white/40">
+                  <div className="divide-y divide-line/70 rounded-lg border border-line bg-paper-50/40">
                     {definition.fields.map((field, index) => (
-                      <div key={field.key} className="flex items-center gap-2.5 px-3 py-2.5">
+                      <div
+                        key={field.key}
+                        id={`builder-field-${field.key}`}
+                        className={cn(
+                          'flex scroll-mt-24 items-center gap-2.5 px-3 py-2.5 transition',
+                          flashTarget === `builder-field-${field.key}` && 'bg-copper-50/70',
+                        )}
+                      >
                         <span className="w-5 shrink-0 text-center font-mono text-[9px] text-ink-300">
                           {faNum(index + 1)}
                         </span>
@@ -833,10 +1371,9 @@ export function BuilderEditorPage() {
               <div>
                 <div className="mb-3 flex items-end justify-between gap-3">
                   <div>
-                    <h2 className="text-sm font-semibold text-ink-900">مسیر مراحل</h2>
+                    <h2 className="text-sm font-semibold text-ink-900">گردش کار</h2>
                     <p className="mt-1 text-[10px] leading-5 text-ink-400">
-                      پرونده مرحله‌به‌مرحله جلو می‌رود؛ کارهای هر مرحله تعیین می‌کنند چه کسی چه کاری
-                      انجام دهد.
+                      ترتیب مراحل و کارهای هر مرحله، مسیر حرکت پرونده را تعیین می‌کند.
                     </p>
                   </div>
                   {!readOnly ? (
@@ -847,190 +1384,573 @@ export function BuilderEditorPage() {
                 </div>
 
                 {stages.length ? (
-                  <div className="space-y-3">
-                    {stages.map((stage, stageIndex) => (
-                      <div
-                        key={stage.key}
-                        className="rounded-xl border border-line bg-white/50 p-3"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-copper-200 bg-copper-50 font-mono text-[10px] font-semibold text-copper-600">
-                            {faNum(stageIndex + 1)}
-                          </span>
-                          <Input
-                            value={stage.name}
-                            onChange={(event) =>
-                              updateStage(stageIndex, { name: event.target.value })
-                            }
-                            aria-label="نام مرحله"
-                            className="h-8 max-w-56 text-xs font-semibold"
-                            disabled={readOnly}
-                          />
-                          <KeyChip>{stage.key}</KeyChip>
-                          <div className="ms-auto flex items-center gap-0.5">
-                            <ReorderButtons
-                              disabled={readOnly}
-                              canUp={stageIndex > 0}
-                              canDown={stageIndex < stages.length - 1}
-                              onUp={() =>
-                                updateDefinition((current) => {
-                                  current.stages = moveItem(current.stages, stageIndex, stageIndex - 1);
-                                  return current;
-                                })
-                              }
-                              onDown={() =>
-                                updateDefinition((current) => {
-                                  current.stages = moveItem(current.stages, stageIndex, stageIndex + 1);
-                                  return current;
-                                })
-                              }
-                            />
-                            {!readOnly ? (
-                              <IconAction
-                                label="حذف مرحله"
-                                danger
-                                onClick={() => setDeleteTarget({ type: 'stage', index: stageIndex })}
-                              >
-                                <Trash size={13} />
-                              </IconAction>
-                            ) : null}
-                          </div>
-                        </div>
-                        <Textarea
-                          value={stage.description ?? ''}
-                          onChange={(event) =>
-                            updateStage(stageIndex, { description: event.target.value })
-                          }
-                          aria-label="توضیح مرحله"
-                          placeholder="این مرحله چه هدفی دارد؟"
-                          className="mt-2 min-h-14 text-[11px]"
-                          disabled={readOnly}
-                        />
-
-                        <details className="mt-2 rounded-lg border border-line bg-paper-50/70 px-2.5 py-2">
-                          <summary className="cursor-pointer text-[10px] font-semibold text-ink-600">
-                            دسترسی‌های این مرحله
-                          </summary>
-                          <div className="mt-3 space-y-3">
-                            <RoleChecklist
-                              label="ویرایش اطلاعات پرونده"
-                              hint="مدیر سیستم، ثبت‌کننده و مسئول کار در هر حال مجاز هستند."
-                              value={stage.permissions?.editRoles ?? []}
-                              disabled={readOnly}
-                              onChange={(roles) =>
-                                updateStage(stageIndex, {
-                                  permissions: {
-                                    ...stage.permissions,
-                                    editRoles: roles.length ? roles : undefined,
-                                  },
-                                })
-                              }
-                            />
-                            <RoleChecklist
-                              label="بارگذاری مدرک"
-                              hint="علاوه بر افراد مجاز به ویرایش، این نقش‌ها هم می‌توانند مدرک اضافه کنند."
-                              value={stage.permissions?.uploadRoles ?? []}
-                              disabled={readOnly}
-                              onChange={(roles) =>
-                                updateStage(stageIndex, {
-                                  permissions: {
-                                    ...stage.permissions,
-                                    uploadRoles: roles.length ? roles : undefined,
-                                  },
-                                })
-                              }
-                            />
-                          </div>
-                        </details>
-
-                        <div className="mt-3 space-y-2">
-                          {stage.tasks.map((task, taskIndex) => (
-                            <div
-                              key={task.key}
-                              className="flex flex-wrap items-center gap-2 rounded-lg border border-line/80 bg-paper-50 px-2.5 py-2"
-                            >
-                              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-paper-200 text-[9px] text-ink-500">
-                                {faNum(taskIndex + 1)}
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="text-[11px] font-semibold text-ink-800">
-                                    {task.name}
-                                  </span>
-                                  <span
-                                    className={cn(
-                                      'rounded px-1.5 py-0.5 text-[9px] font-semibold',
-                                      task.kind === 'approval'
-                                        ? 'bg-ink-900 text-paper-50'
-                                        : 'bg-paper-200 text-ink-600',
+                  <div className="overflow-hidden rounded-lg border border-line">
+                    <div className="overflow-x-auto scroll-thin">
+                      <table className="w-full min-w-[640px] border-collapse text-xs">
+                        <thead className="bg-paper-100/70 text-[10px] text-ink-500">
+                          <tr className="border-b border-line">
+                            <th className="w-14 px-3 py-2.5 text-center font-semibold">ردیف</th>
+                            <th className="px-3 py-2.5 text-start font-semibold">مرحله</th>
+                            <th className="w-20 px-3 py-2.5 text-start font-semibold">کارها</th>
+                            <th className="w-28 px-3 py-2.5 text-start font-semibold">ویرایش فرم</th>
+                            <th className="w-28 px-3 py-2.5 text-start font-semibold">وضعیت</th>
+                            <th className="w-32 px-3 py-2.5 text-end font-semibold">عملیات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-line/70">
+                          {stages.map((stage, stageIndex) => {
+                            const expanded = expandedStage === stage.key;
+                            const editRoles = stage.permissions?.editRoles ?? [];
+                            return (
+                              <Fragment key={stage.key}>
+                                <tr
+                                  id={`builder-stage-${stage.key}`}
+                                  className={cn(
+                                    'scroll-mt-24 transition hover:bg-paper-100/50',
+                                    expanded && 'bg-paper-50',
+                                    flashTarget === `builder-stage-${stage.key}` && 'bg-copper-50/70',
+                                  )}
+                                >
+                                  <td className="px-3 py-3 text-center">
+                                    <span className="inline-flex h-6 w-6 items-center justify-center rounded border border-line bg-paper-50 font-mono text-[10px] font-semibold text-ink-600">
+                                      {faNum(stageIndex + 1)}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-3">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setExpandedStage(expanded ? null : stage.key)
+                                      }
+                                      className="focus-ring block text-start font-semibold text-ink-800 hover:text-copper-600"
+                                    >
+                                      {stage.name}
+                                    </button>
+                                    <div className="mt-1">
+                                      <KeyChip>{stage.key}</KeyChip>
+                                    </div>
+                                  </td>
+                                  <td className="px-3 py-3 font-mono text-[11px] text-ink-600">
+                                    {stage.tasks.length ? faNum(stage.tasks.length) : '—'}
+                                  </td>
+                                  <td className="px-3 py-3 text-[10px] text-ink-500">
+                                    {editRoles.length ? `${faNum(editRoles.length)} نقش` : 'پیش‌فرض'}
+                                  </td>
+                                  <td className="px-3 py-3">
+                                    {stage.tasks.length ? (
+                                      <span className="inline-flex items-center gap-1.5 rounded border border-verdigris-100 bg-verdigris-50 px-2 py-0.5 text-[10px] font-semibold text-verdigris-700">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+                                        دارای کار
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1.5 rounded border border-ochre-100 bg-ochre-50 px-2 py-0.5 text-[10px] font-semibold text-ochre-600">
+                                        <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+                                        عبور خودکار
+                                      </span>
                                     )}
-                                  >
-                                    {task.kind === 'approval' ? 'تأیید' : 'اقدام'}
-                                  </span>
-                                </div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[9px] text-ink-400">
-                                  <span className="inline-flex items-center gap-1">
-                                    <span className="h-1 w-1 rounded-full bg-copper-400" />
-                                    {task.assignee.type === 'role'
-                                      ? ROLE_LABELS[task.assignee.value as keyof typeof ROLE_LABELS] ??
-                                        'نقش نامشخص'
-                                      : assigneeTypeLabels[
-                                          task.assignee.type as AssigneeOption
-                                        ] ?? task.assignee.type}
-                                  </span>
-                                  {task.dueInHours ? <span>{faNum(task.dueInHours)} ساعت</span> : null}
-                                  {task.formFields?.length ? (
-                                    <span>{faNum(task.formFields.length)} فیلد فرم</span>
-                                  ) : null}
-                                  {task.requiredDocuments?.length ? (
-                                    <span>{faNum(task.requiredDocuments.length)} مدرک</span>
-                                  ) : null}
-                                  {task.condition ? <span>شرطی</span> : null}
-                                </div>
-                              </div>
-                              {!readOnly ? (
-                                <div className="flex items-center gap-0.5">
-                                  <IconAction
-                                    label="ویرایش کار"
-                                    onClick={() => openTask(stageIndex, taskIndex)}
-                                  >
-                                    <PencilSimple size={12} />
-                                  </IconAction>
-                                  <IconAction
-                                    label="حذف کار"
-                                    danger
-                                    onClick={() =>
-                                      setDeleteTarget({ type: 'task', stageIndex, taskIndex })
-                                    }
-                                  >
-                                    <Trash size={12} />
-                                  </IconAction>
-                                </div>
-                              ) : null}
-                            </div>
-                          ))}
-                          {!stage.tasks.length ? (
-                            <p className="rounded-lg border border-dashed border-line px-3 py-2 text-[10px] text-ink-400">
-                              این مرحله کار ندارد و خودکار عبور می‌کند.
-                            </p>
-                          ) : null}
-                          {!readOnly ? (
-                            <button
-                              type="button"
-                              onClick={() => openNewTask(stageIndex)}
-                              className="focus-ring inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold text-copper-600 hover:bg-copper-50"
-                            >
-                              <Plus size={11} />
-                              افزودن کار به این مرحله
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
+                                  </td>
+                                  <td className="px-3 py-3">
+                                    <div className="flex items-center justify-end gap-0.5">
+                                      <ReorderButtons
+                                        disabled={readOnly}
+                                        canUp={stageIndex > 0}
+                                        canDown={stageIndex < stages.length - 1}
+                                        onUp={() =>
+                                          updateDefinition((current) => {
+                                            current.stages = moveItem(
+                                              current.stages,
+                                              stageIndex,
+                                              stageIndex - 1,
+                                            );
+                                            return current;
+                                          })
+                                        }
+                                        onDown={() =>
+                                          updateDefinition((current) => {
+                                            current.stages = moveItem(
+                                              current.stages,
+                                              stageIndex,
+                                              stageIndex + 1,
+                                            );
+                                            return current;
+                                          })
+                                        }
+                                      />
+                                      <IconAction
+                                        label={expanded ? 'بستن جزئیات مرحله' : 'نمایش جزئیات مرحله'}
+                                        onClick={() =>
+                                          setExpandedStage(expanded ? null : stage.key)
+                                        }
+                                      >
+                                        <CaretDown
+                                          size={13}
+                                          className={cn('transition', expanded && 'rotate-180')}
+                                        />
+                                      </IconAction>
+                                      {!readOnly ? (
+                                        <IconAction
+                                          label="حذف مرحله"
+                                          danger
+                                          onClick={() =>
+                                            setDeleteTarget({ type: 'stage', index: stageIndex })
+                                          }
+                                        >
+                                          <Trash size={13} />
+                                        </IconAction>
+                                      ) : null}
+                                    </div>
+                                  </td>
+                                </tr>
+
+                                {expanded ? (
+                                  <tr className="bg-paper-50/80">
+                                    <td colSpan={6} className="border-t border-line/70 px-4 py-4">
+                                      <div className="grid gap-5">
+                                        <div className="space-y-3">
+                                          <Field label="نام مرحله">
+                                            <Input
+                                              value={stage.name}
+                                              onChange={(event) =>
+                                                updateStage(stageIndex, {
+                                                  name: event.target.value,
+                                                })
+                                              }
+                                              className="h-9 text-xs"
+                                              disabled={readOnly}
+                                            />
+                                          </Field>
+                                          <Field label="هدف مرحله">
+                                            <Textarea
+                                              value={stage.description ?? ''}
+                                              onChange={(event) =>
+                                                updateStage(stageIndex, {
+                                                  description: event.target.value,
+                                                })
+                                              }
+                                              placeholder="این مرحله چه خروجی‌ای باید تولید کند؟"
+                                              className="min-h-16 text-[11px]"
+                                              disabled={readOnly}
+                                            />
+                                          </Field>
+                                          <details className="rounded-md border border-line bg-paper-50/70 px-3 py-2">
+                                            <summary className="cursor-pointer text-[10px] font-semibold text-ink-600">
+                                              دسترسی‌های مرحله
+                                            </summary>
+                                            <div className="mt-3 space-y-3">
+                                              <RoleChecklist
+                                                label="ویرایش اطلاعات پرونده"
+                                                hint="مدیر سیستم، ثبت‌کننده و مسئول کار در هر حال مجاز هستند."
+                                                value={editRoles}
+                                                roles={roleOptions}
+                                                disabled={readOnly}
+                                                onChange={(roles) =>
+                                                  updateStage(stageIndex, {
+                                                    permissions: {
+                                                      ...stage.permissions,
+                                                      editRoles: roles.length ? roles : undefined,
+                                                    },
+                                                  })
+                                                }
+                                              />
+                                              <RoleChecklist
+                                                label="بارگذاری مدرک"
+                                                hint="علاوه بر افراد مجاز به ویرایش، این نقش‌ها هم می‌توانند مدرک اضافه کنند."
+                                                value={stage.permissions?.uploadRoles ?? []}
+                                                roles={roleOptions}
+                                                disabled={readOnly}
+                                                onChange={(roles) =>
+                                                  updateStage(stageIndex, {
+                                                    permissions: {
+                                                      ...stage.permissions,
+                                                      uploadRoles: roles.length ? roles : undefined,
+                                                    },
+                                                  })
+                                                }
+                                              />
+                                            </div>
+                                          </details>
+                                        </div>
+
+                                        <div>
+                                          <div className="mb-2 flex items-center justify-between gap-2">
+                                            <div>
+                                              <h3 className="text-[11px] font-semibold text-ink-700">
+                                                پارامترهای اختصاصی مرحله
+                                              </h3>
+                                              <p className="mt-0.5 text-[9px] text-ink-400">
+                                                فقط در فرم کارهای همین مرحله نمایش داده می‌شوند.
+                                              </p>
+                                            </div>
+                                            {!readOnly ? (
+                                              <Button
+                                                variant="paper"
+                                                size="sm"
+                                                icon={<Plus size={12} />}
+                                                onClick={() => openNewStageField(stageIndex)}
+                                              >
+                                                پارامتر جدید
+                                              </Button>
+                                            ) : null}
+                                          </div>
+                                          <div className="overflow-hidden rounded-md border border-line bg-paper-50/80">
+                                            {stage.fields?.length ? (
+                                              <div className="divide-y divide-line/60">
+                                                {stage.fields.map((field, fieldIndex) => (
+                                                  <div
+                                                    key={field.key}
+                                                    className="flex items-center gap-2 px-3 py-2"
+                                                  >
+                                                    <span className="w-5 shrink-0 text-center font-mono text-[9px] text-ink-300">
+                                                      {faNum(fieldIndex + 1)}
+                                                    </span>
+                                                    <div className="min-w-0 flex-1">
+                                                      <div className="flex flex-wrap items-center gap-1.5">
+                                                        <span className="truncate text-[11px] font-semibold text-ink-800">
+                                                          {field.label}
+                                                        </span>
+                                                        {field.required ? (
+                                                          <span className="rounded bg-copper-50 px-1.5 py-0.5 text-[9px] font-semibold text-copper-600">
+                                                            الزامی
+                                                          </span>
+                                                        ) : null}
+                                                      </div>
+                                                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[9px] text-ink-400">
+                                                        <span>{FIELD_TYPE_LABELS[field.type]}</span>
+                                                        <KeyChip>{field.key}</KeyChip>
+                                                        {field.masterTypeKey ? (
+                                                          <span>مبنا: {field.masterTypeKey}</span>
+                                                        ) : null}
+                                                      </div>
+                                                    </div>
+                                                    {!readOnly ? (
+                                                      <div className="flex shrink-0 items-center gap-0.5">
+                                                        <IconAction
+                                                          label="ویرایش پارامتر"
+                                                          onClick={() =>
+                                                            openStageField(stageIndex, fieldIndex)
+                                                          }
+                                                        >
+                                                          <PencilSimple size={12} />
+                                                        </IconAction>
+                                                        <IconAction
+                                                          label="حذف پارامتر"
+                                                          danger
+                                                          onClick={() =>
+                                                            setDeleteTarget({
+                                                              type: 'stage_field',
+                                                              stageIndex,
+                                                              index: fieldIndex,
+                                                            })
+                                                          }
+                                                        >
+                                                          <Trash size={12} />
+                                                        </IconAction>
+                                                      </div>
+                                                    ) : null}
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            ) : (
+                                              <p className="px-3 py-3 text-center text-[10px] text-ink-400">
+                                                هنوز پارامتر اختصاصی برای این مرحله تعریف نشده است.
+                                              </p>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        <div>
+                                          <div className="mb-2 flex items-center justify-between gap-2">
+                                            <h3 className="text-[11px] font-semibold text-ink-700">
+                                              کارهای این مرحله
+                                            </h3>
+                                            {!readOnly ? (
+                                              <Button
+                                                variant="paper"
+                                                size="sm"
+                                                icon={<Plus size={12} />}
+                                                onClick={() => openNewTask(stageIndex)}
+                                              >
+                                                کار جدید
+                                              </Button>
+                                            ) : null}
+                                          </div>
+                                          <div className="overflow-hidden rounded-md border border-line bg-paper-50/80">
+                                            {stage.tasks.length ? (
+                                              <div className="overflow-x-auto scroll-thin">
+                                                <table className="w-full min-w-[720px] border-collapse text-[11px]">
+                                                  <thead className="bg-paper-100/70 text-[9px] text-ink-500">
+                                                    <tr className="border-b border-line">
+                                                      <th className="w-10 px-2 py-2 text-center font-semibold">
+                                                        #
+                                                      </th>
+                                                      <th className="px-2 py-2 text-start font-semibold">
+                                                        کار
+                                                      </th>
+                                                      <th className="px-2 py-2 text-start font-semibold">
+                                                        نوع
+                                                      </th>
+                                                      <th className="px-2 py-2 text-start font-semibold">
+                                                        مسئول
+                                                      </th>
+                                                      <th className="px-2 py-2 text-start font-semibold">
+                                                        مهلت
+                                                      </th>
+                                                      <th className="px-2 py-2 text-start font-semibold">
+                                                        پیوست
+                                                      </th>
+                                                      <th className="w-20 px-2 py-2 text-end font-semibold">
+                                                        عملیات
+                                                      </th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody className="divide-y divide-line/60">
+                                                    {stage.tasks.map((task, taskIndex) => (
+                                                      <tr
+                                                        key={task.key}
+                                                        className="hover:bg-paper-100/50"
+                                                      >
+                                                        <td className="px-2 py-2 text-center font-mono text-[10px] text-ink-400">
+                                                          {faNum(taskIndex + 1)}
+                                                        </td>
+                                                        <td className="px-2 py-2">
+                                                          <div className="font-semibold text-ink-800">
+                                                            {task.name}
+                                                          </div>
+                                                          <div className="mt-0.5 flex items-center gap-1">
+                                                            <KeyChip>{task.key}</KeyChip>
+                                                            {task.condition ? (
+                                                              <span className="rounded bg-ochre-50 px-1.5 py-0.5 text-[9px] text-ochre-600">
+                                                                شرطی
+                                                              </span>
+                                                            ) : null}
+                                                          </div>
+                                                        </td>
+                                                        <td className="px-2 py-2">
+                                                          <span
+                                                            className={cn(
+                                                              'rounded px-1.5 py-0.5 text-[9px] font-semibold',
+                                                              task.kind === 'approval'
+                                                                ? 'bg-ink-900 text-paper-50'
+                                                                : task.kind === 'selection'
+                                                                  ? 'bg-copper-100 text-copper-700'
+                                                                  : 'bg-paper-200 text-ink-700',
+                                                            )}
+                                                          >
+                                                            {task.kind === 'approval'
+                                                              ? 'تأیید'
+                                                              : task.kind === 'selection'
+                                                                ? 'انتخاب'
+                                                                : 'اقدام'}
+                                                          </span>
+                                                        </td>
+                                                        <td className="px-2 py-2 text-[10px] text-ink-600">
+                                                          {task.assignee.type === 'role'
+                                                            ? roleDisplay(
+                                                                task.assignee.value,
+                                                                roleOptions,
+                                                              )
+                                                            : task.assignee.type === 'user'
+                                                              ? (masterOptions.data?.users.find(
+                                                                  (candidate) =>
+                                                                    candidate.id ===
+                                                                    task.assignee.value,
+                                                                )?.name ?? 'کاربر مشخص')
+                                                              : assigneeTypeLabels[
+                                                                  task.assignee
+                                                                    .type as AssigneeOption
+                                                                ] ?? task.assignee.type}
+                                                        </td>
+                                                        <td className="px-2 py-2 font-mono text-[10px] text-ink-500">
+                                                          {task.dueInHours
+                                                            ? `${faNum(task.dueInHours)} ساعت`
+                                                            : '—'}
+                                                        </td>
+                                                        <td className="px-2 py-2 text-[10px] text-ink-500">
+                                                          {[
+                                                            task.formFields?.length
+                                                              ? `${faNum(task.formFields.length)} فیلد`
+                                                              : '',
+                                                            task.requiredDocuments?.length
+                                                              ? `${faNum(task.requiredDocuments.length)} مدرک`
+                                                              : '',
+                                                          ]
+                                                            .filter(Boolean)
+                                                            .join(' · ') || '—'}
+                                                        </td>
+                                                        <td className="px-2 py-2">
+                                                          {!readOnly ? (
+                                                            <div className="flex items-center justify-end gap-0.5">
+                                                              <IconAction
+                                                                label="ویرایش کار"
+                                                                onClick={() =>
+                                                                  openTask(stageIndex, taskIndex)
+                                                                }
+                                                              >
+                                                                <PencilSimple size={12} />
+                                                              </IconAction>
+                                                              <IconAction
+                                                                label="حذف کار"
+                                                                danger
+                                                                onClick={() =>
+                                                                  setDeleteTarget({
+                                                                    type: 'task',
+                                                                    stageIndex,
+                                                                    taskIndex,
+                                                                  })
+                                                                }
+                                                              >
+                                                                <Trash size={12} />
+                                                              </IconAction>
+                                                            </div>
+                                                          ) : (
+                                                            <span className="block text-end text-[10px] text-ink-300">
+                                                              —
+                                                            </span>
+                                                          )}
+                                                        </td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                              </div>
+                                            ) : (
+                                              <p className="px-3 py-4 text-center text-[10px] text-ink-400">
+                                                کار فعالی برای این مرحله تعریف نشده است؛ کاربران پس از تکمیل
+                                                مرحله قبل به این مرحله منتقل می‌شوند.
+                                              </p>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        <div>
+                                          <div className="mb-2 flex items-center justify-between gap-2">
+                                            <div>
+                                              <h3 className="text-[11px] font-semibold text-ink-700">
+                                                مسیرهای خروج مرحله
+                                              </h3>
+                                              <p className="mt-0.5 text-[9px] text-ink-400">
+                                                اگر مسیری تعریف نشود، گردش به ترتیب مراحل ادامه پیدا می‌کند.
+                                              </p>
+                                            </div>
+                                            {!readOnly ? (
+                                              <Button
+                                                variant="paper"
+                                                size="sm"
+                                                icon={<Plus size={12} />}
+                                                onClick={() => openNewTransition(stageIndex)}
+                                              >
+                                                مسیر جدید
+                                              </Button>
+                                            ) : null}
+                                          </div>
+                                          <div className="overflow-hidden rounded-md border border-line bg-paper-50/80">
+                                            {stage.transitions?.length ? (
+                                              <div className="divide-y divide-line/60">
+                                                {stage.transitions.map((transition, transitionIndex) => {
+                                                  const targetLabel =
+                                                    transition.type === 'stage'
+                                                      ? stages.find(
+                                                          (candidate) =>
+                                                            candidate.key === transition.stageKey,
+                                                        )?.name ?? transition.stageKey
+                                                      : transition.type === 'case_type'
+                                                        ? caseTypes.data?.find(
+                                                            (candidate) =>
+                                                              candidate.key ===
+                                                              transition.caseTypeKey,
+                                                          )?.name ?? transition.caseTypeKey
+                                                        : 'پایان پرونده';
+                                                  return (
+                                                    <div
+                                                      key={`${transition.type}-${transitionIndex}`}
+                                                      className="flex items-center gap-2 px-3 py-2"
+                                                    >
+                                                      <span className="w-5 shrink-0 text-center font-mono text-[9px] text-ink-300">
+                                                        {faNum(transitionIndex + 1)}
+                                                      </span>
+                                                      <div className="min-w-0 flex-1">
+                                                        <div className="flex flex-wrap items-center gap-1.5">
+                                                          <span className="text-[11px] font-semibold text-ink-800">
+                                                            {transition.label ||
+                                                              transitionTypeLabels[transition.type]}
+                                                          </span>
+                                                          <span className="rounded bg-paper-200 px-1.5 py-0.5 text-[9px] font-semibold text-ink-600">
+                                                            {transitionTypeLabels[transition.type]}
+                                                          </span>
+                                                          {transition.condition ? (
+                                                            <span className="rounded bg-ochre-50 px-1.5 py-0.5 text-[9px] text-ochre-600">
+                                                              شرطی
+                                                            </span>
+                                                          ) : null}
+                                                        </div>
+                                                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[9px] text-ink-400">
+                                                          <span>مقصد: {targetLabel}</span>
+                                                          {transition.condition ? (
+                                                            <span>
+                                                              شرط: {transition.condition.field}{' '}
+                                                              {conditionOperatorLabels[
+                                                                transition.condition.op
+                                                              ]}{' '}
+                                                              {String(transition.condition.value ?? '')}
+                                                            </span>
+                                                          ) : (
+                                                            <span>همیشه</span>
+                                                          )}
+                                                        </div>
+                                                      </div>
+                                                      {!readOnly ? (
+                                                        <div className="flex shrink-0 items-center gap-0.5">
+                                                          <IconAction
+                                                            label="ویرایش مسیر"
+                                                            onClick={() =>
+                                                              openTransition(
+                                                                stageIndex,
+                                                                transitionIndex,
+                                                              )
+                                                            }
+                                                          >
+                                                            <PencilSimple size={12} />
+                                                          </IconAction>
+                                                          <IconAction
+                                                            label="حذف مسیر"
+                                                            danger
+                                                            onClick={() =>
+                                                              setDeleteTarget({
+                                                                type: 'transition',
+                                                                stageIndex,
+                                                                index: transitionIndex,
+                                                              })
+                                                            }
+                                                          >
+                                                            <Trash size={12} />
+                                                          </IconAction>
+                                                        </div>
+                                                      ) : null}
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            ) : (
+                                              <p className="px-3 py-3 text-center text-[10px] text-ink-400">
+                                                مسیر خروج سفارشی تعریف نشده است؛ گردش پیش‌فرض فعال است.
+                                              </p>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 ) : (
                   <EmptyState
-                    title="مسیر هنوز مرحله‌ای ندارد."
+                    title="گردش کار هنوز مرحله‌ای ندارد."
                     description="اولین مرحله را اضافه کنید؛ هر مرحله می‌تواند یک یا چند کار داشته باشد."
                     action={
                       !readOnly ? (
@@ -1065,9 +1985,16 @@ export function BuilderEditorPage() {
                   ) : null}
                 </div>
                 {documents.length ? (
-                  <div className="divide-y divide-line/70 rounded-lg border border-line bg-white/40">
+                  <div className="divide-y divide-line/70 rounded-lg border border-line bg-paper-50/40">
                     {documents.map((document, index) => (
-                      <div key={document.key} className="flex items-center gap-2.5 px-3 py-2.5">
+                      <div
+                        key={document.key}
+                        id={`builder-document-${document.key}`}
+                        className={cn(
+                          'flex scroll-mt-24 items-center gap-2.5 px-3 py-2.5 transition',
+                          flashTarget === `builder-document-${document.key}` && 'bg-copper-50/70',
+                        )}
+                      >
                         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-paper-100 text-ink-400">
                           <Warning size={14} />
                         </span>
@@ -1137,56 +2064,49 @@ export function BuilderEditorPage() {
           <Card className="overflow-hidden">
             <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
               <div>
-                <h2 className="text-xs font-semibold text-ink-900">جانمای مسیر</h2>
-                <p className="mt-0.5 text-[9px] text-ink-400">پیش‌نمایش آنچه ثبت‌کننده می‌بیند</p>
+                <h2 className="text-xs font-semibold text-ink-900">خلاصه گردش کار</h2>
+                <p className="mt-0.5 text-[9px] text-ink-400">ترتیب اجرای مراحل</p>
               </div>
-              <span className="rounded-full border border-line bg-paper-100 px-2 py-0.5 font-mono text-[9px] text-ink-400">
+              <span className="rounded border border-line bg-paper-100 px-2 py-0.5 font-mono text-[9px] text-ink-500">
                 {faNum(stages.length)} مرحله
               </span>
             </div>
-            <div className="px-4 py-4">
+            <div className="divide-y divide-line/60">
               {stages.length ? (
-                <div className="relative">
-                  <div className="absolute bottom-3 right-[9px] top-3 w-px bg-line" />
-                  <div className="space-y-3">
-                    {stages.map((stage, index) => (
-                      <div key={stage.key} className="relative flex gap-3">
-                        <span
-                          className={cn(
-                            'relative z-10 mt-0.5 flex h-[19px] w-[19px] shrink-0 items-center justify-center rounded-full border',
-                            index === 0
-                              ? 'border-copper-500 bg-copper-500 text-white shadow-[0_0_0_4px_var(--color-copper-50)]'
-                              : 'border-line bg-paper-50 text-ink-300',
-                          )}
-                        >
-                          <Circle size={6} weight="fill" />
-                        </span>
-                        <div className="min-w-0 pb-1">
-                          <div className="truncate text-[11px] font-semibold text-ink-700">
-                            {stage.name}
-                          </div>
-                          <div className="mt-0.5 text-[9px] text-ink-400">
-                            {stage.tasks.length
-                              ? `${faNum(stage.tasks.length)} کار · ${stage.tasks
-                                  .map((task) =>
-                                    task.assignee.type === 'role'
-                                      ? ROLE_LABELS[
-                                          task.assignee.value as keyof typeof ROLE_LABELS
-                                        ] ?? 'نقش'
-                                      : assigneeTypeLabels[
-                                          task.assignee.type as AssigneeOption
-                                        ] ?? '',
-                                  )
-                                  .join('، ')}`
-                              : 'بدون کار · عبور خودکار'}
-                          </div>
-                        </div>
+                stages.map((stage, index) => (
+                  <div key={stage.key} className="flex items-start gap-2.5 px-4 py-2.5">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-paper-100 font-mono text-[9px] text-ink-500">
+                      {faNum(index + 1)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[11px] font-semibold text-ink-700">
+                        {stage.name}
                       </div>
-                    ))}
+                      <div className="mt-0.5 truncate text-[9px] text-ink-400">
+                        {stage.tasks.length
+                          ? `${faNum(stage.tasks.length)} کار · ${stage.tasks
+                              .map((task) =>
+                                task.assignee.type === 'role'
+                                  ? roleDisplay(task.assignee.value, roleOptions)
+                                  : task.assignee.type === 'user'
+                                    ? (masterOptions.data?.users.find(
+                                        (candidate) =>
+                                          candidate.id === task.assignee.value,
+                                      )?.name ?? 'کاربر مشخص')
+                                    : assigneeTypeLabels[
+                                        task.assignee.type as AssigneeOption
+                                      ] ?? '',
+                              )
+                              .join('، ')}`
+                          : 'بدون کار · عبور خودکار'}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ))
               ) : (
-                <p className="py-3 text-center text-[10px] text-ink-400">مرحله‌ای تعریف نشده است.</p>
+                <p className="px-4 py-6 text-center text-[10px] text-ink-400">
+                  مرحله‌ای تعریف نشده است.
+                </p>
               )}
             </div>
             <div className="grid grid-cols-3 divide-x divide-line border-t border-line text-center [direction:ltr]">
@@ -1200,7 +2120,9 @@ export function BuilderEditorPage() {
             <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
               <div className="flex items-center gap-1.5">
                 <ShieldCheck size={14} className="text-verdigris-600" />
-                <h2 className="text-xs font-semibold text-ink-900">سلامت ساختار</h2>
+                <h2 ref={healthRef} className="text-xs font-semibold text-ink-900">
+                  اعتبارسنجی ساختار
+                </h2>
               </div>
               <Button
                 variant="ghost"
@@ -1215,7 +2137,7 @@ export function BuilderEditorPage() {
             <div className="px-4 py-3">
               {health === null ? (
                 <p className="text-[10px] leading-6 text-ink-400">
-                  پیش از انتشار، ساختار فرم، مراحل، شرط‌ها و مدارک را بررسی کنید.
+                  پیش از انتشار، صحت فرم، گردش کار، شرط‌ها و مدارک را بررسی کنید.
                 </p>
               ) : health.ok && !health.issues.length ? (
                 <div className="flex items-start gap-2 rounded-lg border border-verdigris-100 bg-verdigris-50 px-3 py-2.5">
@@ -1234,24 +2156,49 @@ export function BuilderEditorPage() {
                       خطای بازدارنده‌ای نیست؛ هشدارها را مرور کنید.
                     </p>
                   ) : null}
-                  {health.issues.map((issue, index) => (
-                    <div
-                      key={`${issue.path ?? ''}-${index}`}
-                      className={cn(
-                        'flex items-start gap-2 rounded-lg border px-2.5 py-2 text-[9px] leading-5',
-                        issue.level === 'error'
-                          ? 'border-stamp-100 bg-stamp-50 text-stamp-600'
-                          : 'border-ochre-100 bg-ochre-50 text-ochre-600',
-                      )}
-                    >
-                      {issue.level === 'error' ? (
-                        <WarningCircle size={13} className="mt-0.5 shrink-0" />
-                      ) : (
-                        <Warning size={13} className="mt-0.5 shrink-0" />
-                      )}
-                      <span>{issue.message}</span>
-                    </div>
-                  ))}
+                  {health.issues.map((issue, index) => {
+                    const target = issueTarget(issue);
+                    const className = cn(
+                      'flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-[9px] leading-5',
+                      issue.level === 'error'
+                        ? 'border-stamp-100 bg-stamp-50 text-stamp-600'
+                        : 'border-ochre-100 bg-ochre-50 text-ochre-600',
+                      target
+                        ? 'focus-ring text-start transition hover:brightness-[0.97]'
+                        : undefined,
+                    );
+                    const body = (
+                      <>
+                        {issue.level === 'error' ? (
+                          <WarningCircle size={13} className="mt-0.5 shrink-0" />
+                        ) : (
+                          <Warning size={13} className="mt-0.5 shrink-0" />
+                        )}
+                        <span className="flex-1">{issue.message}</span>
+                        {target ? (
+                          <span className="mt-0.5 inline-flex shrink-0 items-center gap-0.5 font-semibold opacity-60">
+                            {target.label}
+                            <ArrowLeft size={10} />
+                          </span>
+                        ) : null}
+                      </>
+                    );
+                    const key = `${issue.path ?? ''}-${index}`;
+                    return target ? (
+                      <button
+                        key={key}
+                        type="button"
+                        className={className}
+                        onClick={() => jumpToIssue(issue)}
+                      >
+                        {body}
+                      </button>
+                    ) : (
+                      <div key={key} className={className}>
+                        {body}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1260,10 +2207,32 @@ export function BuilderEditorPage() {
       </div>
 
       <Modal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title="پیش‌نمایش فرم پرونده"
+        description="همان چیزی که ثبت‌کنندهٔ پرونده می‌بیند؛ بدون ذخیره‌سازی."
+        size="lg"
+      >
+        <CaseFormPreview
+          definition={definition}
+          options={masterOptions.data}
+          onClose={() => setPreviewOpen(false)}
+        />
+      </Modal>
+
+      <Modal
         open={Boolean(fieldEditor)}
         onClose={() => setFieldEditor(null)}
-        title={fieldEditor?.index === null ? 'فیلد جدید' : 'ویرایش فیلد'}
-        description="کلید فنی برای ذخیره‌سازی استفاده می‌شود و بعد از انتشار بهتر است تغییر نکند."
+        title={
+          fieldEditor?.scope === 'stage'
+            ? fieldEditor.index === null
+              ? 'پارامتر مرحله جدید'
+              : 'ویرایش پارامتر مرحله'
+            : fieldEditor?.index === null
+              ? 'فیلد جدید'
+              : 'ویرایش فیلد'
+        }
+        description="کلید فیلد در کل فرآیند باید یکتا باشد. پارامترهای مرحله فقط در فرم کارهای همان مرحله نمایش داده می‌شوند."
         footer={
           <>
             <Button variant="ghost" onClick={() => setFieldEditor(null)}>
@@ -1278,7 +2247,12 @@ export function BuilderEditorPage() {
         {fieldEditor ? (
           <FieldEditorFields
             draft={fieldEditor.draft}
-            fields={definition.fields.filter((field) => field.key !== fieldEditor.draft.key)}
+            fields={allDefinitionFields(definition).filter(
+              (field) => field.key !== fieldEditor.draft.key,
+            )}
+            masterTypes={(masterOptions.data?.customTypes ?? []).filter(
+              (type) => type.entity === 'custom',
+            )}
             error={editorError}
             onChange={(patch) =>
               setFieldEditor((current) =>
@@ -1312,8 +2286,14 @@ export function BuilderEditorPage() {
         {taskEditor ? (
           <TaskEditorFields
             draft={taskEditor.draft}
-            fields={definition.fields}
+            fields={
+              currentStage
+                ? fieldsForStage(definition, currentStage.key)
+                : definition.fields
+            }
+            allFields={allDefinitionFields(definition)}
             documents={documents}
+            roles={roleOptions}
             error={editorError}
             onChange={(patch) =>
               setTaskEditor((current) =>
@@ -1321,6 +2301,257 @@ export function BuilderEditorPage() {
               )
             }
           />
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(transitionEditor)}
+        onClose={() => setTransitionEditor(null)}
+        title={
+          transitionEditor?.index === null ? 'مسیر خروج جدید' : 'ویرایش مسیر خروج'
+        }
+        description="تعیین کنید پس از تکمیل کارهای این مرحله، پرونده به کجا منتقل شود."
+        size="md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setTransitionEditor(null)}>
+              انصراف
+            </Button>
+            <Button variant="ink" onClick={saveTransition}>
+              ذخیره مسیر
+            </Button>
+          </>
+        }
+      >
+        {transitionEditor ? (
+          <div className="space-y-3">
+            <Field label="عنوان مسیر">
+              <Input
+                value={transitionEditor.draft.label ?? ''}
+                onChange={(event) =>
+                  setTransitionEditor((current) =>
+                    current
+                      ? { ...current, draft: { ...current.draft, label: event.target.value } }
+                      : current,
+                  )
+                }
+                placeholder="مثلاً تأیید مدیر یا ارسال به خرید"
+              />
+            </Field>
+            <Field label="نوع خروج">
+              <Select
+                value={transitionEditor.draft.type}
+                onChange={(event) => {
+                  const type = event.target.value as StageTransition['type'];
+                  setTransitionEditor((current) => {
+                    if (!current) return current;
+                    const stage = definition.stages[current.stageIndex];
+                    const fallbackStage = definition.stages.find(
+                      (candidate) => candidate.key !== stage?.key,
+                    );
+                    const publishedCaseType = caseTypes.data?.find(
+                      (candidate) => candidate.status === 'published',
+                    );
+                    return {
+                      ...current,
+                      draft: {
+                        ...current.draft,
+                        type,
+                        stageKey:
+                          type === 'stage'
+                            ? current.draft.stageKey ?? fallbackStage?.key
+                            : undefined,
+                        caseTypeKey:
+                          type === 'case_type'
+                            ? current.draft.caseTypeKey ?? publishedCaseType?.key
+                            : undefined,
+                      },
+                    };
+                  });
+                }}
+              >
+                {(Object.keys(transitionTypeLabels) as StageTransition['type'][]).map(
+                  (type) => (
+                    <option key={type} value={type}>
+                      {transitionTypeLabels[type]}
+                    </option>
+                  ),
+                )}
+              </Select>
+            </Field>
+            {transitionEditor.draft.type === 'stage' ? (
+              <Field label="مرحله مقصد">
+                <Select
+                  value={transitionEditor.draft.stageKey ?? ''}
+                  onChange={(event) =>
+                    setTransitionEditor((current) =>
+                      current
+                        ? {
+                            ...current,
+                            draft: { ...current.draft, stageKey: event.target.value },
+                          }
+                        : current,
+                    )
+                  }
+                >
+                  <option value="">انتخاب مرحله</option>
+                  {definition.stages
+                    .filter(
+                      (stage) =>
+                        stage.key !==
+                        definition.stages[transitionEditor.stageIndex]?.key,
+                    )
+                    .map((stage) => (
+                      <option key={stage.key} value={stage.key}>
+                        {stage.name}
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+            ) : null}
+            {transitionEditor.draft.type === 'case_type' ? (
+              <Field label="فرآیند مقصد">
+                <Select
+                  value={transitionEditor.draft.caseTypeKey ?? ''}
+                  onChange={(event) =>
+                    setTransitionEditor((current) =>
+                      current
+                        ? {
+                            ...current,
+                            draft: { ...current.draft, caseTypeKey: event.target.value },
+                          }
+                        : current,
+                    )
+                  }
+                >
+                  <option value="">انتخاب فرآیند منتشرشده</option>
+                  {(caseTypes.data ?? [])
+                    .filter((caseType) => caseType.status === 'published')
+                    .map((caseType) => (
+                      <option key={caseType.key} value={caseType.key}>
+                        {caseType.name}
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+            ) : null}
+            <div className="rounded-md border border-line bg-paper-100/40 p-3">
+              <label className="flex items-center gap-2 text-[11px] font-semibold text-ink-700">
+                <input
+                  type="checkbox"
+                  checked={Boolean(transitionEditor.draft.condition)}
+                  onChange={(event) =>
+                    setTransitionEditor((current) =>
+                      current
+                        ? {
+                            ...current,
+                            draft: {
+                              ...current.draft,
+                              condition: event.target.checked
+                                ? {
+                                    field:
+                                      fieldsForStage(
+                                        definition,
+                                        definition.stages[current.stageIndex]?.key ?? '',
+                                      )[0]?.key ?? '',
+                                    op: 'eq',
+                                    value: '',
+                                  }
+                                : undefined,
+                            },
+                          }
+                        : current,
+                    )
+                  }
+                />
+                این مسیر فقط هنگام برقراری شرط اجرا شود
+              </label>
+              {transitionEditor.draft.condition ? (
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  <Select
+                    value={transitionEditor.draft.condition.field}
+                    onChange={(event) =>
+                      setTransitionEditor((current) =>
+                        current && current.draft.condition
+                          ? {
+                              ...current,
+                              draft: {
+                                ...current.draft,
+                                condition: {
+                                  ...current.draft.condition,
+                                  field: event.target.value,
+                                },
+                              },
+                            }
+                          : current,
+                      )
+                    }
+                  >
+                    {fieldsForStage(
+                      definition,
+                      definition.stages[transitionEditor.stageIndex]?.key ?? '',
+                    ).map((field) => (
+                      <option key={field.key} value={field.key}>
+                        {field.label}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={transitionEditor.draft.condition.op}
+                    onChange={(event) =>
+                      setTransitionEditor((current) =>
+                        current && current.draft.condition
+                          ? {
+                              ...current,
+                              draft: {
+                                ...current.draft,
+                                condition: {
+                                  ...current.draft.condition,
+                                  op: event.target.value as Condition['op'],
+                                },
+                              },
+                            }
+                          : current,
+                      )
+                    }
+                  >
+                    {(Object.keys(conditionOperatorLabels) as Condition['op'][]).map(
+                      (op) => (
+                        <option key={op} value={op}>
+                          {conditionOperatorLabels[op]}
+                        </option>
+                      ),
+                    )}
+                  </Select>
+                  <Input
+                    value={String(transitionEditor.draft.condition.value ?? '')}
+                    onChange={(event) =>
+                      setTransitionEditor((current) =>
+                        current && current.draft.condition
+                          ? {
+                              ...current,
+                              draft: {
+                                ...current.draft,
+                                condition: {
+                                  ...current.draft.condition,
+                                  value: event.target.value,
+                                },
+                              },
+                            }
+                          : current,
+                      )
+                    }
+                    placeholder="مقدار"
+                  />
+                </div>
+              ) : null}
+            </div>
+            {editorError ? (
+              <p className="rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] text-stamp-600">
+                {editorError}
+              </p>
+            ) : null}
+          </div>
         ) : null}
       </Modal>
 
@@ -1431,13 +2662,15 @@ export function BuilderEditorPage() {
         onConfirm={confirmDelete}
         title="حذف از ساختار فرآیند"
         description={
-          deleteTarget?.type === 'field'
-            ? 'این فیلد از فرم حذف می‌شود و از کارها و تنظیمات مرتبط هم برداشته می‌شود. دادهٔ پرونده‌های موجود پاک نمی‌شود.'
-            : deleteTarget?.type === 'stage'
-              ? 'این مرحله و همهٔ کارهای آن حذف می‌شود. ارجاع مدارک به این مرحله هم برداشته می‌شود.'
-              : deleteTarget?.type === 'task'
-                ? 'این کار از مرحله حذف می‌شود. پرونده‌های در جریان ممکن است به این کار نیاز داشته باشند.'
-                : 'این مدرک از فهرست مدارک حذف می‌شود و از کارهای مرتبط برداشته می‌شود.'
+          deleteTarget?.type === 'field' || deleteTarget?.type === 'stage_field'
+            ? 'این پارامتر از فرم حذف می‌شود و از کارها، شرط‌ها و تنظیمات مرتبط هم برداشته می‌شود. دادهٔ پرونده‌های موجود پاک نمی‌شود.'
+            : deleteTarget?.type === 'transition'
+              ? 'این مسیر خروج حذف می‌شود و گردش پیش‌فرض مرحله جای آن را می‌گیرد.'
+              : deleteTarget?.type === 'stage'
+                ? 'این مرحله و همهٔ کارهای آن حذف می‌شود. ارجاع مدارک به این مرحله هم برداشته می‌شود.'
+                : deleteTarget?.type === 'task'
+                  ? 'این کار از مرحله حذف می‌شود. پرونده‌های در جریان ممکن است به این کار نیاز داشته باشند.'
+                  : 'این مدرک از فهرست مدارک حذف می‌شود و از کارهای مرتبط برداشته می‌شود.'
         }
         confirmLabel="حذف"
       />
@@ -1448,11 +2681,19 @@ export function BuilderEditorPage() {
 function GeneralTab({
   meta,
   caseKey,
+  users,
   readOnly,
   onChange,
 }: {
-  meta: { name: string; description: string; icon: string; referencePrefix: string };
+  meta: {
+    name: string;
+    description: string;
+    icon: string;
+    referencePrefix: string;
+    ownerId: string | null;
+  };
   caseKey: string;
+  users: UserSummary[];
   readOnly: boolean;
   onChange: (patch: Partial<typeof meta>) => void;
 }) {
@@ -1484,6 +2725,25 @@ function GeneralTab({
           disabled={readOnly}
         />
       </Field>
+      <Field
+        label="مالک فرآیند"
+        hint="مالک فرآیند می‌تواند این فرآیند و مراحل آن را ویرایش و منتشر کند. برای واگذاری مسئولیت فرآیند به یک کاربر مشخص، او را انتخاب کنید."
+      >
+        <Select
+          value={meta.ownerId ?? ''}
+          onChange={(event) =>
+            onChange({ ownerId: event.target.value || null })
+          }
+          disabled={readOnly}
+        >
+          <option value="">بدون مالک مشخص (فقط مدیر سیستم)</option>
+          {users.map((user) => (
+            <option key={user.id} value={user.id}>
+              {user.name} — {user.jobTitle ?? user.email}
+            </option>
+          ))}
+        </Select>
+      </Field>
       <div className="grid gap-4 sm:grid-cols-[140px_1fr]">
         <Field label="پیشوند شماره پرونده" hint="۲ تا ۸ حرف لاتین">
           <Input
@@ -1510,7 +2770,7 @@ function GeneralTab({
                   'focus-ring flex h-8 w-8 items-center justify-center rounded-md border transition disabled:opacity-50',
                   meta.icon === icon
                     ? 'border-copper-400 bg-copper-50 text-copper-600'
-                    : 'border-line bg-white/60 text-ink-400 hover:border-ink-300 hover:text-ink-700',
+                    : 'border-line bg-paper-50/60 text-ink-400 hover:border-ink-300 hover:text-ink-700',
                 )}
                 aria-label={icon}
               >
@@ -1527,12 +2787,14 @@ function GeneralTab({
 function FieldEditorFields({
   draft,
   fields,
+  masterTypes,
   error,
   onChange,
   onError,
 }: {
   draft: FieldDef;
   fields: FieldDef[];
+  masterTypes: MasterDataTypeDto[];
   error: string;
   onChange: (patch: Partial<FieldDef>) => void;
   onError: (message: string) => void;
@@ -1594,11 +2856,21 @@ function FieldEditorFields({
               const needsOptions = ['select', 'radio', 'multiselect'].includes(type);
               onChange({
                 type,
+                masterTypeKey: type === 'master' ? draft.masterTypeKey : undefined,
                 options: needsOptions
                   ? draft.options?.length
                     ? draft.options
                     : [{ label: '', value: '' }]
                   : undefined,
+                columns:
+                  type === 'table'
+                    ? draft.columns?.length
+                      ? draft.columns
+                      : [{ key: 'column_1', label: 'ستون ۱', type: 'text' }]
+                    : undefined,
+                minRows: type === 'table' ? (draft.minRows ?? 0) : undefined,
+                maxRows: type === 'table' ? draft.maxRows : undefined,
+                addLabel: type === 'table' ? draft.addLabel : undefined,
               });
             }}
           >
@@ -1609,18 +2881,49 @@ function FieldEditorFields({
             ))}
           </Select>
         </Field>
-        <div className="flex items-end pb-1">
+        <div className="flex flex-col justify-end gap-1 pb-1">
           <label className="flex items-center gap-2 text-xs font-medium text-ink-700">
             <input
               type="checkbox"
-              checked={Boolean(draft.required)}
+              checked={Boolean(draft.required) && !draft.hidden && !draft.readonly}
+              disabled={Boolean(draft.hidden || draft.readonly)}
               onChange={(event) => onChange({ required: event.target.checked })}
-              className="h-4 w-4 accent-copper-500"
+              className="h-4 w-4 accent-copper-500 disabled:cursor-not-allowed"
             />
             تکمیل این فیلد الزامی است
           </label>
+          {draft.hidden || draft.readonly ? (
+            <p className="text-[10px] text-ink-400">
+              فیلد پنهان یا فقط‌خواندنی نمی‌تواند الزامی باشد.
+            </p>
+          ) : null}
         </div>
       </div>
+
+      {draft.type === 'master' ? (
+        <Field
+          label="نوع داده پایه"
+          required
+          hint="رکوردهای این نوع در فرم پرونده قابل انتخاب خواهند بود."
+        >
+          <Select
+            value={draft.masterTypeKey ?? ''}
+            onChange={(event) => onChange({ masterTypeKey: event.target.value || undefined })}
+          >
+            <option value="">انتخاب نوع داده…</option>
+            {masterTypes.map((type) => (
+              <option key={type.key} value={type.key}>
+                {type.name} ({type.recordCount} رکورد)
+              </option>
+            ))}
+          </Select>
+          {!masterTypes.length ? (
+            <p className="mt-1 text-[11px] text-ink-400">
+              هنوز نوع داده سفارشی تعریف نشده است. از بخش «داده‌های پایه» آن را بسازید.
+            </p>
+          ) : null}
+        </Field>
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="بخش فرم" hint="فیلدهای هم‌بخش زیر یک عنوان گروه‌بندی می‌شوند.">
@@ -1647,15 +2950,84 @@ function FieldEditorFields({
         </Field>
       </div>
 
-      <label className="flex items-center gap-2 text-xs font-medium text-ink-700">
-        <input
-          type="checkbox"
-          checked={Boolean(draft.readonly)}
-          onChange={(event) => onChange({ readonly: event.target.checked })}
-          className="h-4 w-4 accent-copper-500"
-        />
-        این فیلد فقط‌خواندنی باشد
-      </label>
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs font-medium text-ink-700">
+          <input
+            type="checkbox"
+            checked={Boolean(draft.readonly)}
+            onChange={(event) =>
+              onChange({
+                readonly: event.target.checked,
+                required: event.target.checked ? false : draft.required,
+              })
+            }
+            className="h-4 w-4 accent-copper-500"
+          />
+          این فیلد فقط‌خواندنی باشد
+        </label>
+        <label className="flex items-center gap-2 text-xs font-medium text-ink-700">
+          <input
+            type="checkbox"
+            checked={Boolean(draft.hidden)}
+            onChange={(event) =>
+              onChange({
+                hidden: event.target.checked,
+                required: event.target.checked ? false : draft.required,
+              })
+            }
+            className="h-4 w-4 accent-copper-500"
+          />
+          از فرم پنهان باشد (فقط در داده‌ها ذخیره شود)
+        </label>
+      </div>
+
+      {draft.type === 'table' ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="حداقل ردیف">
+              <Input
+                type="number"
+                min={0}
+                value={draft.minRows ?? 0}
+                onChange={(event) =>
+                  onChange({
+                    minRows: event.target.value === '' ? 0 : Number(event.target.value),
+                  })
+                }
+                dir="ltr"
+                className="font-mono"
+              />
+            </Field>
+            <Field label="حداکثر ردیف" hint="خالی یعنی بدون محدودیت">
+              <Input
+                type="number"
+                min={1}
+                value={draft.maxRows ?? ''}
+                onChange={(event) =>
+                  onChange({
+                    maxRows:
+                      event.target.value === '' ? undefined : Number(event.target.value),
+                  })
+                }
+                dir="ltr"
+                className="font-mono"
+              />
+            </Field>
+            <Field label="برچسب دکمه افزودن">
+              <Input
+                value={draft.addLabel ?? ''}
+                onChange={(event) => onChange({ addLabel: event.target.value })}
+                placeholder="افزودن ردیف"
+              />
+            </Field>
+          </div>
+          <TableColumnsEditor
+            columns={draft.columns ?? []}
+            masterTypes={masterTypes}
+            onChange={(columns) => onChange({ columns })}
+          />
+        </>
+      ) : null}
 
       {supportsOptions ? (
         <Field label="گزینه‌ها" hint="برای هر گزینه، برچسب و مقدار ذخیره‌سازی را وارد کنید.">
@@ -1815,16 +3187,156 @@ function FieldEditorFields({
   );
 }
 
+function TableColumnsEditor({
+  columns,
+  masterTypes,
+  onChange,
+}: {
+  columns: FieldDef[];
+  masterTypes: MasterDataTypeDto[];
+  onChange: (columns: FieldDef[]) => void;
+}) {
+  const update = (index: number, patch: Partial<FieldDef>) => {
+    onChange(columns.map((column, current) => (current === index ? { ...column, ...patch } : column)));
+  };
+
+  const addColumn = () => {
+    const keys = new Set(columns.map((column) => column.key));
+    let index = columns.length + 1;
+    while (keys.has(`column_${index}`)) index += 1;
+    onChange([...columns, { key: `column_${index}`, label: `ستون ${index}`, type: 'text' }]);
+  };
+
+  return (
+    <Field
+      label="ستون‌های جدول"
+      hint="هر ستون مانند یک فیلد عمل می‌کند؛ برای ستون انتخابی گزینه‌ها را با کاما جدا کنید."
+    >
+      <div className="space-y-2">
+        {columns.map((column, index) => {
+          const needsOptions = ['select', 'radio', 'multiselect'].includes(column.type);
+          return (
+            <div
+              key={index}
+              className="space-y-2 rounded-lg border border-line bg-paper-50 p-2.5"
+            >
+              <div className="grid gap-2 sm:grid-cols-[1.2fr_1fr_0.9fr]">
+                <Input
+                  value={column.label}
+                  onChange={(event) => update(index, { label: event.target.value })}
+                  placeholder="برچسب ستون"
+                  className="h-9 text-xs"
+                />
+                <Input
+                  value={column.key}
+                  onChange={(event) => update(index, { key: event.target.value })}
+                  placeholder="key"
+                  dir="ltr"
+                  className="h-9 font-mono text-[11px]"
+                />
+                <Select
+                  value={column.type}
+                  onChange={(event) => {
+                    const type = event.target.value as FieldType;
+                    const needsOptions = ['select', 'radio', 'multiselect'].includes(type);
+                    update(index, {
+                      type,
+                      masterTypeKey: type === 'master' ? column.masterTypeKey : undefined,
+                      options: needsOptions
+                        ? column.options?.length
+                          ? column.options
+                          : [{ label: '', value: '' }]
+                        : undefined,
+                    });
+                  }}
+                  className="h-9 text-xs"
+                >
+                  {FIELD_TYPES.filter((type) => type !== 'table' && type !== 'rollup').map((type) => (
+                    <option key={type} value={type}>
+                      {FIELD_TYPE_LABELS[type]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-1.5 text-[11px] text-ink-600">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(column.required)}
+                    onChange={(event) => update(index, { required: event.target.checked })}
+                    className="h-3.5 w-3.5 accent-copper-500"
+                  />
+                  الزامی
+                </label>
+                {column.type === 'master' ? (
+                  <Select
+                    value={column.masterTypeKey ?? ''}
+                    onChange={(event) =>
+                      update(index, { masterTypeKey: event.target.value || undefined })
+                    }
+                    className="h-8 max-w-52 text-[11px]"
+                  >
+                    <option value="">نوع داده پایه…</option>
+                    {masterTypes.map((type) => (
+                      <option key={type.key} value={type.key}>
+                        {type.name}
+                      </option>
+                    ))}
+                  </Select>
+                ) : null}
+                {needsOptions ? (
+                  <Input
+                    value={(column.options ?? []).map((option) => option.label).join('، ')}
+                    onChange={(event) =>
+                      update(index, {
+                        options: event.target.value
+                          .split(/[,،]/)
+                          .map((label) => label.trim())
+                          .filter(Boolean)
+                          .map((label) => ({ label, value: label })),
+                      })
+                    }
+                    placeholder="گزینه‌ها با کاما"
+                    className="h-8 max-w-60 text-[11px]"
+                  />
+                ) : null}
+                <span className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChange(columns.filter((_, current) => current !== index))
+                  }
+                  className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-stamp-50 hover:text-stamp-600"
+                  aria-label="حذف ستون"
+                >
+                  <Trash size={13} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        <Button variant="paper" size="sm" icon={<Plus size={12} />} onClick={addColumn}>
+          افزودن ستون
+        </Button>
+      </div>
+    </Field>
+  );
+}
+
 function TaskEditorFields({
   draft,
   fields,
+  allFields,
   documents,
+  roles,
   error,
   onChange,
 }: {
   draft: TaskDef;
   fields: FieldDef[];
+  allFields: FieldDef[];
   documents: DocumentDef[];
+  roles: RoleDto[];
   error: string;
   onChange: (patch: Partial<TaskDef>) => void;
 }) {
@@ -1863,6 +3375,32 @@ function TaskEditorFields({
     onChange({ condition: { ...base, ...patch } });
   };
 
+  const assigneeUser = (masterOptions.data?.users ?? []).find(
+    (user) => user.id === draft.assignee.value,
+  );
+  const formFieldCandidates = fields.filter((field) => !field.hidden);
+  const tableFields = allFields.filter((field) => field.type === 'table');
+  const selection = draft.selection;
+  const sourceTable = tableFields.find((field) => field.key === selection?.sourceField);
+  const selectionColumns = sourceTable?.columns ?? [];
+  const selectionCopy = selection?.copy ?? [];
+  const setSelection = (patch: Partial<NonNullable<TaskDef['selection']>>) => {
+    onChange({
+      selection: {
+        sourceField: selection?.sourceField ?? '',
+        labelColumn: selection?.labelColumn,
+        copy: selection?.copy,
+        ...patch,
+      },
+    });
+  };
+  const copyTargetFor = (from: string) =>
+    selectionCopy.find((copy) => copy.from === from)?.to ?? '';
+  const setCopyTarget = (from: string, to: string) => {
+    const rest = selectionCopy.filter((copy) => copy.from !== from);
+    setSelection({ copy: to ? [...rest, { from, to }] : rest });
+  };
+
   return (
     <div className="space-y-5">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -1895,10 +3433,21 @@ function TaskEditorFields({
         <Field label="نوع کار">
           <Select
             value={draft.kind ?? 'action'}
-            onChange={(event) => onChange({ kind: event.target.value as 'approval' | 'action' })}
+            onChange={(event) => {
+              const kind = event.target.value as 'approval' | 'action' | 'selection';
+              onChange({
+                kind,
+                formFields: kind === 'approval' ? undefined : draft.formFields,
+                selection:
+                  kind === 'selection'
+                    ? (draft.selection ?? { sourceField: '', copy: [] })
+                    : undefined,
+              });
+            }}
           >
             <option value="approval">تأیید / رد</option>
             <option value="action">اقدام</option>
+            <option value="selection">انتخاب از جدول</option>
           </Select>
         </Field>
         <Field label="مسئول">
@@ -1906,7 +3455,8 @@ function TaskEditorFields({
             value={assigneeType}
             onChange={(event) => {
               const type = event.target.value as AssigneeOption;
-              const defaultRole = type === 'role' ? 'manager' : undefined;
+              const defaultRole =
+                type === 'role' ? (roles[0]?.key ?? 'manager') : undefined;
               const firstUser = type === 'user' ? masterOptions.data?.users[0]?.id : undefined;
               onChange({
                 assignee: { type, value: defaultRole ?? firstUser },
@@ -1929,9 +3479,9 @@ function TaskEditorFields({
               }
             >
               <option value="">انتخاب نقش…</option>
-              {ROLE_KEYS.map((role) => (
-                <option key={role} value={role}>
-                  {ROLE_LABELS[role]}
+              {roles.map((role) => (
+                <option key={role.key} value={role.key}>
+                  {role.name}
                 </option>
               ))}
             </Select>
@@ -1951,6 +3501,12 @@ function TaskEditorFields({
                 </option>
               ))}
             </Select>
+            {assigneeUser ? (
+              <p className="mt-1.5 rounded-md border border-copper-100 bg-copper-50/60 px-2 py-1.5 text-[9px] leading-4 text-copper-700">
+                فقط {assigneeUser.name} می‌تواند این کار را انجام دهد؛ حتی اعضای نقش
+                سازمانی او نیز دسترسی نخواهند داشت.
+              </p>
+            ) : null}
           </Field>
         ) : (
           <Field label="مهلت انجام (ساعت)">
@@ -1989,9 +3545,13 @@ function TaskEditorFields({
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <h3 className="mb-2 text-[11px] font-semibold text-ink-700">فیلدهای فرم این کار</h3>
-          {fields.length ? (
+          {draft.kind === 'approval' ? (
+            <p className="rounded-lg border border-dashed border-line px-3 py-3 text-[10px] leading-5 text-ink-400">
+              کار تأیید فرم ورودی ندارد؛ مسئول فقط تأیید، رد، بازگشت یا درخواست اطلاعات را ثبت می‌کند.
+            </p>
+          ) : formFieldCandidates.length ? (
             <div className="max-h-40 space-y-1 overflow-y-auto scroll-thin rounded-lg border border-line bg-paper-50 p-2">
-              {fields.map((field) => (
+              {formFieldCandidates.map((field) => (
                 <label
                   key={field.key}
                   className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11px] text-ink-700 hover:bg-paper-100"
@@ -2040,6 +3600,97 @@ function TaskEditorFields({
           )}
         </div>
       </div>
+
+      {draft.kind === 'selection' ? (
+        <div className="space-y-3 rounded-lg border border-copper-200 bg-copper-50/40 p-3">
+          <div>
+            <h3 className="text-[11px] font-semibold text-copper-800">انتخاب از جدول</h3>
+            <p className="mt-0.5 text-[10px] leading-5 text-copper-700/80">
+              مسئول کار یک ردیف از جدول را انتخاب می‌کند و مقادیر ستون‌های مشخص‌شده در فیلدهای
+              مقصد نوشته می‌شوند.
+            </p>
+          </div>
+          {tableFields.length ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="جدول منبع" required>
+                  <Select
+                    value={selection?.sourceField ?? ''}
+                    onChange={(event) =>
+                      setSelection({
+                        sourceField: event.target.value,
+                        labelColumn: undefined,
+                        copy: [],
+                      })
+                    }
+                  >
+                    <option value="">انتخاب جدول…</option>
+                    {tableFields.map((field) => (
+                      <option key={field.key} value={field.key}>
+                        {field.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="ستون عنوان گزینه" hint="برای نمایش خلاصهٔ هر گزینه">
+                  <Select
+                    value={selection?.labelColumn ?? ''}
+                    onChange={(event) =>
+                      setSelection({ labelColumn: event.target.value || undefined })
+                    }
+                    disabled={!sourceTable}
+                  >
+                    <option value="">بدون عنوان مشخص</option>
+                    {selectionColumns.map((column) => (
+                      <option key={column.key} value={column.key}>
+                        {column.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              {sourceTable ? (
+                <Field
+                  label="کپی مقادیر به فیلدهای پرونده"
+                  hint="برای هر ستون، فیلد مقصد را انتخاب کنید؛ ستون‌های بدون مقصد نادیده گرفته می‌شوند."
+                >
+                  <div className="space-y-1.5">
+                    {selectionColumns.map((column) => (
+                      <div
+                        key={column.key}
+                        className="grid items-center gap-2 sm:grid-cols-[1fr_1fr]"
+                      >
+                        <span className="truncate text-[11px] text-ink-600">
+                          {column.label}
+                          <KeyChip>{column.key}</KeyChip>
+                        </span>
+                        <Select
+                          value={copyTargetFor(column.key)}
+                          onChange={(event) => setCopyTarget(column.key, event.target.value)}
+                          className="h-8 text-[11px]"
+                        >
+                          <option value="">بدون کپی</option>
+                          {allFields
+                            .filter((field) => field.key !== sourceTable.key)
+                            .map((field) => (
+                              <option key={field.key} value={field.key}>
+                                {field.label} ({field.key})
+                              </option>
+                            ))}
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </Field>
+              ) : null}
+            </>
+          ) : (
+            <p className="rounded-lg border border-dashed border-copper-200 px-3 py-3 text-[10px] text-copper-700/80">
+              هنوز جدولی در فرآیند تعریف نشده است. ابتدا یک فیلد از نوع «جدول چندردیفی» بسازید.
+            </p>
+          )}
+        </div>
+      ) : null}
 
       <div className="rounded-lg border border-line bg-paper-100/45 p-3">
         <label className="flex items-center gap-2 text-[11px] font-semibold text-ink-700">

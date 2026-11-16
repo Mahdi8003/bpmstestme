@@ -11,10 +11,10 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: Number(process.env.WEB_PORT ?? 5173),
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:4000',
+        target: process.env.API_URL ?? 'http://127.0.0.1:4000',
         changeOrigin: true,
       },
     },

@@ -2,8 +2,11 @@ import { useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  allDefinitionFields,
   evaluateCondition,
+  fieldsForStage,
   type CaseDetail,
+  type CaseLink,
   type CaseTypeDefinition,
   type CommentDto,
   type DocumentDto,
@@ -35,6 +38,7 @@ import {
   formatDate,
   formatDateTime,
   formatMoney,
+  taskAssigneeLabel,
 } from '@/lib/format';
 import { Avatar, Button, Card, Field, Input, Modal, Textarea, cn } from '@/components/ui';
 import { PageHeader } from '@/components/PageHeader';
@@ -48,9 +52,11 @@ import {
   TaskStatusBadge,
 } from '@/components/domain';
 import { DynamicFields, fieldDisplayValue, useMasterOptions } from '@/components/DynamicFields';
+import { useRoleName } from '@/lib/roles';
 import { useToast } from '@/components/ToastProvider';
 
 const eventLabels: Record<string, string> = {
+  'case.converted': 'پرونده به فرآیند دیگر منتقل شد',
   'case.created': 'پرونده ایجاد شد',
   'case.updated': 'اطلاعات پرونده ویرایش شد',
   'case.completed': 'پرونده تکمیل شد',
@@ -62,6 +68,7 @@ const eventLabels: Record<string, string> = {
   'case.comment': 'یادداشت ثبت شد',
   'comment.added': 'یادداشت ثبت شد',
   'document.uploaded': 'مدرک بارگذاری شد',
+  'document.deleted': 'مدرک حذف شد',
   'stage.entered': 'مرحله جدید آغاز شد',
   'task.created': 'کار ایجاد شد',
   'task.claimed': 'کار برداشته شد',
@@ -78,6 +85,7 @@ export function CaseDetailPage() {
   const { user } = useAuth();
   const toast = useToast();
   const options = useMasterOptions();
+  const roleName = useRoleName();
   const [editOpen, setEditOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
@@ -87,6 +95,7 @@ export function CaseDetailPage() {
   const [editData, setEditData] = useState<Record<string, unknown>>({});
   const [editError, setEditError] = useState('');
   const [showAllEvents, setShowAllEvents] = useState(false);
+  const [docTarget, setDocTarget] = useState<DocumentDto | null>(null);
   const generalFileRef = useRef<HTMLInputElement>(null);
 
   const detail = useQuery({
@@ -140,6 +149,10 @@ export function CaseDetailPage() {
 
   const uploadDocument = useMutation({
     mutationFn: ({ file, documentKey }: { file: File; documentKey?: string }) => {
+      if (!file.size) throw new Error('فایل انتخاب‌شده خالی است.');
+      if (file.size > 10 * 1024 * 1024) {
+        throw new Error('حجم فایل نباید بیشتر از ۱۰ مگابایت باشد.');
+      }
       const key = documentKey ? `?documentKey=${encodeURIComponent(documentKey)}` : '';
       return api.upload<DocumentDto>(`/cases/${id}/documents${key}`, file);
     },
@@ -148,6 +161,17 @@ export function CaseDetailPage() {
       toast.success('مدرک بارگذاری شد.');
     },
     onError: (error) => toast.error('بارگذاری مدرک ممکن نشد.', errorMessage(error)),
+  });
+
+  const deleteDocument = useMutation({
+    mutationFn: (document: DocumentDto) =>
+      api.delete(`/cases/${id}/documents/${document.id}`),
+    onSuccess: () => {
+      setDocTarget(null);
+      refresh();
+      toast.success('مدرک حذف شد.');
+    },
+    onError: (error) => toast.error('حذف مدرک ممکن نشد.', errorMessage(error)),
   });
 
   if (detail.isLoading) {
@@ -180,7 +204,8 @@ export function CaseDetailPage() {
   const closedTasks = item.tasks.filter((task) =>
     ['completed', 'cancelled'].includes(task.status),
   );
-  const visibleEvents = showAllEvents ? item.events : item.events.slice(0, 6);
+  const orderedEvents = [...item.events].reverse();
+  const visibleEvents = showAllEvents ? orderedEvents : orderedEvents.slice(0, 6);
   const descriptionField = definition.settings?.descriptionField;
   const description =
     descriptionField && typeof item.data[descriptionField] === 'string'
@@ -271,13 +296,23 @@ export function CaseDetailPage() {
       <Card className="mb-6 overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-line bg-paper-100/45 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-500">
               <CaseTypeIcon icon={item.caseTypeIcon} size={16} />
             </span>
             <div>
               <div className="text-[11px] font-semibold text-ink-800">{item.caseTypeName}</div>
               <div className="mt-0.5 text-[10px] text-ink-400">
-                مرحله فعلی: <span className="font-medium text-ink-600">{item.stageName}</span>
+                {item.status === 'in_progress' || item.status === 'on_hold' ? (
+                  <>
+                    مرحله فعلی:{' '}
+                    <span className="font-medium text-ink-600">{item.stageName}</span>
+                  </>
+                ) : (
+                  <>
+                    آخرین مرحله:{' '}
+                    <span className="font-medium text-ink-600">{item.stageName}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -292,6 +327,40 @@ export function CaseDetailPage() {
           <StageRail definition={definition} currentStageKey={item.stageKey} status={item.status} />
         </div>
       </Card>
+
+      {item.parentCase || item.childCases.length ? (
+        <Card className="mb-6 overflow-hidden">
+          <div className="flex items-center gap-2 border-b border-line bg-paper-100/45 px-4 py-3">
+            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-paper-50 text-ink-500">
+              <ArrowRight size={15} className="rotate-180" />
+            </span>
+            <div>
+              <h2 className="text-sm font-semibold text-ink-900">زنجیره فرآیند</h2>
+              <p className="mt-0.5 text-[10px] text-ink-400">
+                ارتباط این پرونده با فرآیندهای قبل و بعد
+              </p>
+            </div>
+          </div>
+          <div className="divide-y divide-line/70">
+            {item.parentCase ? (
+              <LinkedCaseRow label="فرآیند مبدأ" link={item.parentCase} />
+            ) : null}
+            <div className="flex items-center gap-3 bg-copper-50/40 px-4 py-3">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-copper-500" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] font-semibold text-copper-600">این پرونده</div>
+                <div className="mt-0.5 truncate text-xs font-semibold text-ink-800">
+                  {item.reference} · {item.title}
+                </div>
+              </div>
+              <StatusBadge status={item.status} />
+            </div>
+            {item.childCases.map((child) => (
+              <LinkedCaseRow key={child.id} label="فرآیند ایجادشده" link={child} />
+            ))}
+          </div>
+        </Card>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(310px,0.8fr)]">
         <div className="space-y-6">
@@ -313,7 +382,12 @@ export function CaseDetailPage() {
                 </button>
               ) : null}
             </div>
-            <CaseDataView definition={definition} data={item.data} options={options.data} />
+            <CaseDataView
+              definition={definition}
+              data={item.data}
+              options={options.data}
+              documents={item.documents}
+            />
           </Card>
 
           <Card className="overflow-hidden">
@@ -361,6 +435,7 @@ export function CaseDetailPage() {
             caseItem={item}
             canUpload={item.canUpload}
             onUpload={(file, documentKey) => uploadDocument.mutate({ file, documentKey })}
+            onDelete={item.canUpload ? (document) => setDocTarget(document) : undefined}
             uploading={uploadDocument.isPending}
             fileRef={generalFileRef}
           />
@@ -415,7 +490,7 @@ export function CaseDetailPage() {
                     value={comment}
                     onChange={(event) => setComment(event.target.value)}
                     placeholder="یادداشت یا توضیحی برای تیم بنویسید…"
-                    className="min-h-20 bg-white text-xs"
+                    className="min-h-20 bg-paper-50 text-xs"
                   />
                   {commentError ? (
                     <p className="mt-1 text-[10px] text-stamp-600">{commentError}</p>
@@ -444,7 +519,10 @@ export function CaseDetailPage() {
               <MetaRow label="ثبت‌کننده" value={item.createdByName ?? '—'} icon={<User size={13} />} />
               <MetaRow
                 label="مسئول فعلی"
-                value={item.assigneeName ?? 'بدون مسئول'}
+                value={
+                  item.assigneeName ??
+                  (openTasks[0] ? taskAssigneeLabel(openTasks[0], roleName) : '—')
+                }
                 icon={<User size={13} />}
               />
               <MetaRow
@@ -525,7 +603,14 @@ export function CaseDetailPage() {
             <Button
               variant="ink"
               loading={updateCase.isPending}
-              onClick={() => updateCase.mutate({ title: editTitle.trim() || item.title, data: editData })}
+              onClick={() =>
+                updateCase.mutate({
+                  title: definition.settings?.titleField
+                    ? item.title
+                    : editTitle.trim() || item.title,
+                  data: editData,
+                })
+              }
             >
               ذخیره تغییرات
             </Button>
@@ -533,17 +618,21 @@ export function CaseDetailPage() {
         }
       >
         <div className="space-y-4">
-          <Field label="عنوان پرونده" required>
-            <Input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
-          </Field>
+          {!definition.settings?.titleField ? (
+            <Field label="عنوان پرونده" required>
+              <Input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
+            </Field>
+          ) : null}
           <DynamicFields
-            fields={definition.fields}
+            fields={fieldsForStage(definition, item.stageKey)}
             values={editData}
             onChange={(key, value) =>
               setEditData((current) => ({ ...current, [key]: value }))
             }
             options={options.data}
             layout={definition.settings?.formLayout}
+            caseId={item.id}
+            documents={item.documents}
           />
           {editError ? (
             <div className="rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
@@ -582,7 +671,54 @@ export function CaseDetailPage() {
           />
         </Field>
       </Modal>
+
+      <Modal
+        open={Boolean(docTarget)}
+        onClose={() => setDocTarget(null)}
+        title="حذف مدرک"
+        description="فایل از پرونده حذف می‌شود؛ برای جایگزینی، پس از حذف فایل جدید را بارگذاری کنید."
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDocTarget(null)}>
+              انصراف
+            </Button>
+            <Button
+              variant="danger"
+              loading={deleteDocument.isPending}
+              onClick={() => docTarget && deleteDocument.mutate(docTarget)}
+            >
+              حذف مدرک
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm leading-7 text-ink-600">
+          «{docTarget?.name}» حذف شود؟ این کار قابل بازگشت نیست.
+        </p>
+      </Modal>
     </div>
+  );
+}
+
+function LinkedCaseRow({ label, link }: { label: string; link: CaseLink }) {
+  return (
+    <Link
+      to={`/cases/${link.id}`}
+      className="flex items-center gap-3 px-4 py-3 transition hover:bg-paper-100/60"
+    >
+      <span className="h-2 w-2 shrink-0 rounded-full bg-ink-300" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] font-semibold text-ink-400">{label}</div>
+        <div className="mt-0.5 truncate text-xs font-semibold text-ink-800">
+          {link.reference} · {link.title}
+        </div>
+        <div className="mt-0.5 text-[10px] text-ink-400">
+          {link.caseTypeName} · {link.stageName}
+        </div>
+      </div>
+      <StatusBadge status={link.status} />
+    </Link>
   );
 }
 
@@ -590,14 +726,31 @@ function CaseDataView({
   definition,
   data,
   options,
+  documents,
 }: {
   definition: CaseTypeDefinition;
   data: Record<string, unknown>;
   options?: Parameters<typeof fieldDisplayValue>[2];
+  documents?: DocumentDto[];
 }) {
-  const visibleFields = definition.fields.filter(
-    (field) => !field.visibleWhen || evaluateCondition(field.visibleWhen, definition.fields, data),
-  );
+  const allFields = allDefinitionFields(definition);
+  const globalKeys = new Set(definition.fields.map((field) => field.key));
+  const isEmpty = (value: unknown): boolean =>
+    value === undefined ||
+    value === null ||
+    value === '' ||
+    (Array.isArray(value) && value.length === 0);
+  const visibleFields = allFields
+    .filter(
+      (field) =>
+        !field.visibleWhen || evaluateCondition(field.visibleWhen, allFields, data),
+    )
+    .filter((field) => {
+      const value = data[field.key];
+      if (field.hidden) return !isEmpty(value);
+      if (globalKeys.has(field.key)) return true;
+      return !isEmpty(value);
+    });
   if (!visibleFields.length) {
     return (
       <p className="px-4 py-10 text-center text-[11px] text-ink-400">
@@ -643,9 +796,25 @@ function CaseDataView({
                     field.type === 'currency' && 'font-mono tabular-nums',
                   )}
                 >
-                  {field.type === 'currency' && typeof data[field.key] !== 'undefined'
+                  {field.type === 'table' ? (
+                    <TableValueView
+                      field={field}
+                      value={data[field.key]}
+                      options={options}
+                      documents={documents}
+                    />
+                  ) : field.type === 'file' &&
+                    typeof data[field.key] === 'string' &&
+                    data[field.key] ? (
+                    <a
+                      href={`/api/documents/${String(data[field.key])}/download`}
+                      className="font-medium text-copper-700 hover:underline"
+                    >
+                      {fieldDisplayValue(field, data[field.key], options, documents)}
+                    </a>
+                  ) : field.type === 'currency' && typeof data[field.key] !== 'undefined'
                     ? formatMoney(data[field.key] as number | string)
-                    : fieldDisplayValue(field, data[field.key], options)}
+                    : fieldDisplayValue(field, data[field.key], options, documents)}
                 </dd>
               </div>
             ))}
@@ -656,7 +825,77 @@ function CaseDataView({
   );
 }
 
+function TableValueView({
+  field,
+  value,
+  options,
+  documents,
+}: {
+  field: FieldDef;
+  value: unknown;
+  options?: Parameters<typeof fieldDisplayValue>[2];
+  documents?: DocumentDto[];
+}) {
+  const rows = Array.isArray(value)
+    ? value.filter(
+        (row): row is Record<string, unknown> =>
+          Boolean(row) && typeof row === 'object' && !Array.isArray(row),
+      )
+    : [];
+  const columns = field.columns ?? [];
+  if (!rows.length || !columns.length) return <>—</>;
+  return (
+    <div className="overflow-x-auto rounded-lg border border-line">
+      <table className="min-w-full border-collapse text-[11px]">
+        <thead>
+          <tr className="bg-paper-100/70 text-ink-500">
+            <th className="border-b border-line px-2 py-1.5 text-start font-medium">ردیف</th>
+            {columns.map((column) => (
+              <th
+                key={column.key}
+                className="whitespace-nowrap border-b border-line px-2 py-1.5 text-start font-medium"
+              >
+                {column.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={String(row._key ?? index)} className="align-top">
+              <td className="border-b border-line/60 px-2 py-1.5 text-ink-400">
+                {(index + 1).toLocaleString('fa-IR')}
+              </td>
+              {columns.map((column) => {
+                const cell = row[column.key];
+                return (
+                  <td
+                    key={column.key}
+                    className="border-b border-line/60 px-2 py-1.5 text-ink-800"
+                  >
+                    {column.type === 'file' && typeof cell === 'string' && cell ? (
+                      <a
+                        href={`/api/documents/${cell}/download`}
+                        className="font-medium text-copper-700 hover:underline"
+                      >
+                        {fieldDisplayValue(column, cell, options, documents)}
+                      </a>
+                    ) : (
+                      fieldDisplayValue(column, cell, options, documents)
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function TaskCard({ task, muted = false }: { task: TaskDto; muted?: boolean }) {
+  const roleName = useRoleName();
   return (
     <Link
       to={`/tasks/${task.id}`}
@@ -670,7 +909,7 @@ function TaskCard({ task, muted = false }: { task: TaskDto; muted?: boolean }) {
           'flex h-8 w-8 shrink-0 items-center justify-center rounded-md border',
           task.canAct
             ? 'border-copper-200 bg-copper-50 text-copper-600'
-            : 'border-line bg-white text-ink-400',
+            : 'border-line bg-paper-50 text-ink-400',
         )}
       >
         <SealCheck size={16} />
@@ -681,7 +920,7 @@ function TaskCard({ task, muted = false }: { task: TaskDto; muted?: boolean }) {
           <TaskKindBadge kind={task.kind} />
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-ink-400">
-          <span>{task.assigneeName ?? 'بدون مسئول'}</span>
+          <span>{taskAssigneeLabel(task, roleName)}</span>
           <span className="text-ink-300">·</span>
           <DueChip value={task.dueAt} />
           {task.canAct ? (
@@ -702,12 +941,14 @@ function DocumentsCard({
   caseItem,
   canUpload,
   onUpload,
+  onDelete,
   uploading,
   fileRef,
 }: {
   caseItem: CaseDetail;
   canUpload: boolean;
   onUpload: (file: File, documentKey?: string) => void;
+  onDelete?: (document: DocumentDto) => void;
   uploading: boolean;
   fileRef: RefObject<HTMLInputElement | null>;
 }) {
@@ -763,7 +1004,7 @@ function DocumentsCard({
               return (
                 <div
                   key={document.key}
-                  className="flex items-center gap-2 rounded-lg border border-line bg-white/60 px-2.5 py-2"
+                  className="flex items-center gap-2 rounded-lg border border-line bg-paper-50/60 px-2.5 py-2"
                 >
                   <span
                     className={cn(
@@ -806,7 +1047,7 @@ function DocumentsCard({
         <div className="divide-y divide-line/70">
           {caseItem.documents.map((document) => (
             <div key={document.id} className="flex items-center gap-3 px-4 py-2.5">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line bg-white text-ink-400">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line bg-paper-50 text-ink-400">
                 <FileText size={14} />
               </span>
               <div className="min-w-0 flex-1">
@@ -823,6 +1064,17 @@ function DocumentsCard({
               >
                 <DownloadSimple size={15} />
               </a>
+              {onDelete ? (
+                <button
+                  type="button"
+                  onClick={() => onDelete(document)}
+                  className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-stamp-50 hover:text-stamp-600"
+                  aria-label="حذف مدرک"
+                  title="حذف"
+                >
+                  <Trash size={14} />
+                </button>
+              ) : null}
             </div>
           ))}
         </div>

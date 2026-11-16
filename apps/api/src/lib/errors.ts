@@ -2,6 +2,7 @@ export class AppError extends Error {
   readonly statusCode: number;
   readonly code: string;
   readonly details?: unknown;
+  retryAfterSeconds?: number;
 
   constructor(statusCode: number, message: string, code = 'APP_ERROR', details?: unknown) {
     super(message);
@@ -30,4 +31,10 @@ export function notFound(message = 'موردی پیدا نشد.'): AppError {
 
 export function conflict(message: string): AppError {
   return new AppError(409, message, 'CONFLICT');
+}
+
+export function tooManyRequests(message: string, retryAfterSeconds = 60): AppError {
+  const error = new AppError(429, message, 'RATE_LIMITED');
+  error.retryAfterSeconds = retryAfterSeconds;
+  return error;
 }

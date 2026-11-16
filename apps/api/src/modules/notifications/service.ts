@@ -19,7 +19,7 @@ function toDto(row: typeof notifications.$inferSelect): NotificationDto {
 
 export async function listNotifications(
   auth: AuthContext,
-  query: { unread?: boolean; limit: number },
+  query: { unread?: boolean; limit: number; offset?: number },
 ): Promise<NotificationsDto> {
   const conditions = [
     eq(notifications.tenantId, auth.tenantId),
@@ -32,7 +32,8 @@ export async function listNotifications(
       .from(notifications)
       .where(and(...conditions))
       .orderBy(desc(notifications.createdAt))
-      .limit(query.limit),
+      .limit(query.limit)
+      .offset(query.offset ?? 0),
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(notifications)

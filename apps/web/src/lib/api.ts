@@ -30,17 +30,38 @@ async function parseError(response: Response): Promise<ApiError> {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 20_000;
+export const UNAUTHORIZED_EVENT = 'ravand:unauthorized';
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  const response = await fetch(`/api${path}`, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
-  if (!response.ok) throw await parseError(response);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      ...init,
+      headers,
+      credentials: 'include',
+      signal: init?.signal ?? controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ApiError(408, 'TIMEOUT', 'پاسخی از سرور دریافت نشد. دوباره تلاش کنید.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    if (response.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
+    throw await parseError(response);
+  }
   if (response.status === 204) return undefined as T;
   const text = await response.text();
   return (text ? JSON.parse(text) : undefined) as T;

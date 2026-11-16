@@ -135,7 +135,7 @@ export function InsightsPage() {
                       className="grid grid-cols-1 gap-2 px-4 py-3 md:grid-cols-[minmax(0,1.8fr)_70px_70px_90px_100px_90px] md:items-center md:gap-2"
                     >
                       <div className="flex items-center gap-2.5">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-500">
                           <CaseTypeIcon icon={row.icon} size={15} />
                         </span>
                         <span className="truncate text-xs font-semibold text-ink-800">{row.name}</span>
@@ -284,7 +284,7 @@ function BiggerWeekly({ data }: { data: InsightsDto['weekly'] }) {
           <div className="flex h-44 w-full items-end justify-center gap-1">
             <div
               className="group relative w-[38%] rounded-t-sm bg-ink-800/85"
-              style={{ height: `${Math.max(3, (day.created / max) * 100)}%` }}
+              style={{ height: `${day.created ? Math.max(3, (day.created / max) * 100) : 0}%` }}
               title={`${formatShortDate(day.day)} · ثبت: ${faNum(day.created)}`}
             >
               <span className="absolute -top-5 right-1/2 translate-x-1/2 font-mono text-[9px] text-ink-700 opacity-0 transition group-hover:opacity-100">
@@ -293,7 +293,7 @@ function BiggerWeekly({ data }: { data: InsightsDto['weekly'] }) {
             </div>
             <div
               className="group relative w-[38%] rounded-t-sm bg-verdigris-500/85"
-              style={{ height: `${Math.max(3, (day.completed / max) * 100)}%` }}
+              style={{ height: `${day.completed ? Math.max(3, (day.completed / max) * 100) : 0}%` }}
               title={`${formatShortDate(day.day)} · تکمیل: ${faNum(day.completed)}`}
             >
               <span className="absolute -top-5 right-1/2 translate-x-1/2 font-mono text-[9px] text-verdigris-700 opacity-0 transition group-hover:opacity-100">

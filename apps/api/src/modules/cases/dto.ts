@@ -48,6 +48,7 @@ export function taskDto(
     data: task.data,
     formFields: taskDef?.formFields ?? [],
     requiredDocuments: taskDef?.requiredDocuments ?? [],
+    selection: taskDef?.selection,
     canAct,
     canClaim,
   };

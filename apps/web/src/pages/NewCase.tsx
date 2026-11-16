@@ -19,7 +19,8 @@ import {
   WarningCircle,
 } from '@phosphor-icons/react';
 import { api, errorMessage } from '@/lib/api';
-import { faNum, roleLabel } from '@/lib/format';
+import { faNum } from '@/lib/format';
+import { useRoleName } from '@/lib/roles';
 import { Button, Card, Field, Input, Skeleton } from '@/components/ui';
 import { PageHeader } from '@/components/PageHeader';
 import { CaseTypeIcon } from '@/components/domain';
@@ -32,6 +33,7 @@ export function NewCasePage() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const options = useMasterOptions();
+  const roleName = useRoleName();
   const typeId = params.get('type') ?? '';
   const [data, setData] = useState<Record<string, unknown>>({});
   const [title, setTitle] = useState('');
@@ -51,19 +53,24 @@ export function NewCasePage() {
   });
 
   const definition = typeDetail.data?.definition;
+  const definitionVersion = typeDetail.data?.version;
 
   useEffect(() => {
     if (!definition) return;
     const initial: Record<string, unknown> = {};
     for (const field of definition.fields) {
       initial[field.key] =
-        field.type === 'checkbox' ? false : field.type === 'multiselect' ? [] : '';
+        field.type === 'checkbox'
+          ? false
+          : field.type === 'multiselect' || field.type === 'table'
+            ? []
+            : '';
     }
     setData(initial);
     setTitle('');
     setIssues([]);
     setError('');
-  }, [definition]);
+  }, [typeId, definitionVersion]);
 
   const createCase = useMutation({
     mutationFn: () =>
@@ -98,7 +105,7 @@ export function NewCasePage() {
           actions={
             <Link
               to="/cases"
-              className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-white/55 px-3.5 text-xs font-semibold text-ink-600 hover:bg-white"
+              className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-paper-50/55 px-3.5 text-xs font-semibold text-ink-600 hover:bg-paper-50"
             >
               <ArrowRight size={14} />
               بازگشت به پرونده‌ها
@@ -136,7 +143,7 @@ export function NewCasePage() {
                 style={{ animationDelay: `${index * 35}ms` }}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-white text-ink-600 transition group-hover:border-copper-200 group-hover:bg-copper-50 group-hover:text-copper-600">
+                  <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-line bg-paper-50 text-ink-600 transition group-hover:border-copper-200 group-hover:bg-copper-50 group-hover:text-copper-600">
                     <CaseTypeIcon icon={item.icon} size={21} />
                   </span>
                   <span className="rounded border border-line bg-paper-100 px-1.5 py-0.5 font-mono text-[9px] text-ink-400" dir="ltr">
@@ -277,7 +284,7 @@ export function NewCasePage() {
         <div className="space-y-5">
           <Card className="overflow-hidden">
             <div className="flex items-center gap-2.5 border-b border-line px-4 py-3.5">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-white text-ink-600">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-600">
                 <CaseTypeIcon icon={type.icon} size={18} />
               </span>
               <div>
@@ -389,7 +396,7 @@ export function NewCasePage() {
                           key={task.key}
                           className="rounded bg-paper-100 px-1.5 py-0.5 text-[9px] text-ink-500"
                         >
-                          {assigneeLabel(task.assignee)}
+                          {assigneeLabel(task.assignee, roleName)}
                         </span>
                       ))}
                     </div>
@@ -401,7 +408,7 @@ export function NewCasePage() {
 
           <div className="rounded-xl border border-copper-200 bg-copper-50/55 p-4">
             <div className="flex items-start gap-2.5">
-              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-white text-copper-600">
+              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-paper-50 text-copper-600">
                 <Check size={14} weight="bold" />
               </span>
               <div>
@@ -426,8 +433,11 @@ export function NewCasePage() {
   );
 }
 
-function assigneeLabel(assignee: { type: string; value?: string }): string {
-  if (assignee.type === 'role') return roleLabel(assignee.value ?? 'member');
+function assigneeLabel(
+  assignee: { type: string; value?: string },
+  roleName: (key: string | null | undefined) => string,
+): string {
+  if (assignee.type === 'role') return roleName(assignee.value);
   if (assignee.type === 'creator') return 'ثبت‌کننده';
   if (assignee.type === 'manager') return 'مدیر';
   return 'کاربر';

@@ -1,1020 +1,649 @@
-import { useDeferredValue, useEffect, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import type { ItemDto, PartyDto, WarehouseDto } from '@ravand/shared';
 import {
-  ArrowDown,
-  ArrowUp,
-  Buildings,
+  ArrowsDownUp,
+  Copy,
+  Database,
   MagnifyingGlass,
   Package,
   PencilSimple,
   Plus,
+  SlidersHorizontal,
+  Tag,
+  Trash,
   UsersThree,
   Warehouse,
   X,
 } from '@phosphor-icons/react';
+import type { MasterDataRecordDto, MasterDataTypeDto } from '@ravand/shared';
 import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { faNum, formatDate, formatMoney } from '@/lib/format';
+import { faNum } from '@/lib/format';
+import { hasPermission } from '@/lib/roles';
 import {
+  Badge,
   Button,
   Card,
-  Field,
-  Input,
+  EmptyState,
   Modal,
-  Select,
   Skeleton,
-  Tabs,
-  Textarea,
   cn,
 } from '@/components/ui';
 import { PageHeader } from '@/components/PageHeader';
+import { fieldDisplayValue, useMasterOptions } from '@/components/DynamicFields';
+import { FieldDesigner } from '@/components/master-data/FieldDesigner';
+import { RecordModal } from '@/components/master-data/RecordModal';
 import { useToast } from '@/components/ToastProvider';
 
-interface StockMovementRow {
-  id: string;
-  itemId: string;
-  itemName: string;
-  warehouseId: string;
-  warehouseName: string;
-  type: 'in' | 'out' | 'adjust';
-  quantity: number;
-  reference: string | null;
-  note: string | null;
-  createdByName: string | null;
-  createdAt: string;
+const TYPE_ICONS: Record<string, ReactNode> = {
+  users: <UsersThree size={15} />,
+  package: <Package size={15} />,
+  warehouse: <Warehouse size={15} />,
+  arrows: <ArrowsDownUp size={15} />,
+  tags: <Tag size={15} />,
+  database: <Database size={15} />,
+};
+
+function typeIcon(icon: string) {
+  return TYPE_ICONS[icon] ?? TYPE_ICONS.database;
 }
 
-const PARTY_KIND_LABELS = { customer: 'مشتری', supplier: 'تأمین‌کننده' } as const;
-const MOVEMENT_LABELS = { in: 'ورود', out: 'خروج', adjust: 'اصلاح موجودی' } as const;
-const MASTER_TABS = ['parties', 'items', 'warehouses', 'movements'] as const;
-type MasterTab = (typeof MASTER_TABS)[number];
-
-function isMasterTab(value: string | null): value is MasterTab {
-  return Boolean(value && (MASTER_TABS as readonly string[]).includes(value));
+interface Column {
+  key: string;
+  label: string;
+  value: (record: MasterDataRecordDto) => string;
 }
 
 export function MasterDataPage() {
   const { user } = useAuth();
-  const [params, setParams] = useSearchParams();
-  const requestedTab = params.get('tab');
-  const [tab, setTab] = useState<MasterTab>(
-    isMasterTab(requestedTab) ? requestedTab : 'parties',
-  );
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const masterOptions = useMasterOptions();
+  const canManage = hasPermission(user, 'manageMasterData');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabKey = searchParams.get('tab');
+  const recordId = searchParams.get('record');
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const deferredSearch = useDeferredValue(search);
-  const [partyModal, setPartyModal] = useState<PartyDto | 'new' | null>(null);
-  const [itemModal, setItemModal] = useState<ItemDto | 'new' | null>(null);
-  const [warehouseModal, setWarehouseModal] = useState(false);
-  const [movementModal, setMovementModal] = useState(false);
+  const [designer, setDesigner] = useState<{ open: boolean; type: MasterDataTypeDto | null }>({
+    open: false,
+    type: null,
+  });
+  const [recordEditor, setRecordEditor] = useState<{
+    type: MasterDataTypeDto;
+    record: MasterDataRecordDto | null;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: MasterDataTypeDto;
+    record: MasterDataRecordDto;
+  } | null>(null);
 
-  const canParties = Boolean(user && ['admin', 'builder', 'manager', 'procurement'].includes(user.role));
-  const canItems = Boolean(
-    user && ['admin', 'builder', 'manager', 'procurement', 'warehouse'].includes(user.role),
-  );
-  const canWarehouses = Boolean(user && ['admin', 'builder', 'manager', 'warehouse'].includes(user.role));
-  const canMovements = Boolean(user && ['admin', 'manager', 'warehouse'].includes(user.role));
+  const types = useQuery({
+    queryKey: ['master-types'],
+    queryFn: () => api.get<MasterDataTypeDto[]>('/master/types'),
+  });
+
+  const typeList = types.data ?? [];
+  const handledParams = useRef<string | null>(null);
 
   useEffect(() => {
-    if (isMasterTab(requestedTab) && requestedTab !== tab) setTab(requestedTab);
-  }, [requestedTab, tab]);
+    if (!typeList.length) {
+      setSelectedId(null);
+      return;
+    }
+    if (!tabKey) {
+      setSelectedId((current) =>
+        current && typeList.some((type) => type.id === current) ? current : typeList[0]!.id,
+      );
+      return;
+    }
+    const paramsKey = `${tabKey}|${recordId ?? ''}`;
+    if (handledParams.current === paramsKey) return;
+    const requested = typeList.find((type) => type.key === tabKey || type.entity === tabKey);
+    if (!requested) {
+      setSelectedId((current) =>
+        current && typeList.some((type) => type.id === current) ? current : typeList[0]!.id,
+      );
+      return;
+    }
+    handledParams.current = paramsKey;
+    setSelectedId(requested.id);
+    if (!recordId) {
+      handledParams.current = null;
+      setSearchParams({}, { replace: true });
+    }
+  }, [typeList, tabKey, recordId, setSearchParams]);
 
-  const parties = useQuery({
-    queryKey: ['parties', deferredSearch],
+  const selected = typeList.find((type) => type.id === selectedId) ?? null;
+
+  const records = useQuery({
+    queryKey: ['master-records', selected?.id, deferredSearch],
     queryFn: () =>
-      api.get<PartyDto[]>(
-        `/parties?limit=300${deferredSearch ? `&q=${encodeURIComponent(deferredSearch)}` : ''}`,
+      api.get<MasterDataRecordDto[]>(
+        `/master/types/${selected!.id}/records?limit=500${
+          deferredSearch ? `&q=${encodeURIComponent(deferredSearch)}` : ''
+        }`,
       ),
-    enabled: tab === 'parties',
+    enabled: Boolean(selected),
     placeholderData: (previous) => previous,
   });
-  const items = useQuery({
-    queryKey: ['items', deferredSearch],
-    queryFn: () =>
-      api.get<ItemDto[]>(
-        `/items?limit=300${deferredSearch ? `&q=${encodeURIComponent(deferredSearch)}` : ''}`,
+
+  const recordApplied = useRef<string | null>(null);
+  useEffect(() => {
+    if (!recordId || !selected || !records.isSuccess || records.isPlaceholderData) return;
+    if (recordApplied.current === recordId) return;
+    recordApplied.current = recordId;
+    const match = records.data.find((record) => record.id === recordId);
+    if (match && canManage) {
+      setRecordEditor({ type: selected, record: match });
+    }
+    handledParams.current = null;
+    setSearchParams({}, { replace: true });
+  }, [recordId, selected, records.data, records.isSuccess, records.isPlaceholderData, canManage, setSearchParams]);
+
+  const duplicate = useMutation({
+    mutationFn: (record: MasterDataRecordDto) =>
+      api.post<MasterDataRecordDto>(
+        `/master/types/${record.typeId}/records/${record.id}/duplicate`,
       ),
-    enabled: tab === 'items' || tab === 'movements' || movementModal,
-    placeholderData: (previous) => previous,
-  });
-  const warehouses = useQuery({
-    queryKey: ['warehouses'],
-    queryFn: () => api.get<WarehouseDto[]>('/warehouses'),
-    enabled: tab === 'warehouses' || tab === 'movements' || movementModal,
-  });
-  const movements = useQuery({
-    queryKey: ['stock-movements'],
-    queryFn: () => api.get<StockMovementRow[]>('/stock/movements?limit=200'),
-    enabled: tab === 'movements',
+    onSuccess: (created) => {
+      void queryClient.invalidateQueries({ queryKey: ['master-records', created.typeId] });
+      void queryClient.invalidateQueries({ queryKey: ['master-types'] });
+      void queryClient.invalidateQueries({ queryKey: ['master-options'] });
+      toast.success('رکورد کپی شد.', 'فیلدهای یکتا برای نسخهٔ جدید خالی شده‌اند.');
+    },
+    onError: (error) => toast.error('کپی رکورد ممکن نشد.', errorMessage(error)),
   });
 
-  const activeQuery =
-    tab === 'parties' ? parties : tab === 'items' ? items : tab === 'warehouses' ? warehouses : movements;
-  const hasSearch = tab === 'parties' || tab === 'items';
+  const remove = useMutation({
+    mutationFn: (record: MasterDataRecordDto) => api.delete(`/master/records/${record.id}`),
+    onSuccess: () => {
+      setDeleteTarget(null);
+      void queryClient.invalidateQueries({ queryKey: ['master-records', selected?.id] });
+      void queryClient.invalidateQueries({ queryKey: ['master-types'] });
+      void queryClient.invalidateQueries({ queryKey: ['master-options'] });
+      toast.success('رکورد حذف شد.');
+    },
+    onError: (error) => toast.error('حذف ممکن نشد.', errorMessage(error)),
+  });
+
+  const columns = useMemo<Column[]>(() => {
+    if (!selected) return [];
+    const visible = selected.fields.filter((field) => !field.hidden && field.type !== 'table');
+    const title =
+      visible.find((field) => field.key === selected.titleField) ?? visible[0] ?? null;
+    const rest = title ? visible.filter((field) => field.key !== title.key) : visible;
+    const ordered = title ? [title, ...rest] : visible;
+    const list: Column[] = ordered.slice(0, 5).map((field, index) => ({
+      key: field.key,
+      label: field.label,
+      value: (record) =>
+        index === 0
+          ? record.title
+          : fieldDisplayValue(field, record.data[field.key], masterOptions.data),
+    }));
+    if (selected.entity === 'item') {
+      list.push({
+        key: 'stock',
+        label: 'موجودی',
+        value: (record) =>
+          typeof record.data.stock === 'number'
+            ? faNum(record.data.stock)
+            : '—',
+      });
+    }
+    return list;
+  }, [selected, masterOptions.data]);
+
+  const gridTemplate = `minmax(0,2.4fr) repeat(${Math.max(columns.length - 1, 0)}, minmax(0,1fr)) 96px`;
+
+  const systemTypes = typeList.filter((type) => type.entity !== 'custom');
+  const customTypes = typeList.filter((type) => type.entity === 'custom');
+
+  const typeByKey = useMemo(
+    () => new Map(typeList.map((type) => [type.key, type])),
+    [typeList],
+  );
+  const relationNames = useMemo(() => {
+    if (!selected) return [];
+    const names = new Set<string>();
+    for (const field of selected.fields) {
+      if (field.type === 'master' && field.masterTypeKey) {
+        names.add(typeByKey.get(field.masterTypeKey)?.name ?? field.masterTypeKey);
+      } else if (field.type === 'party') {
+        names.add(typeByKey.get('party')?.name ?? 'طرف حساب');
+      } else if (field.type === 'item') {
+        names.add(typeByKey.get('item')?.name ?? 'کالا');
+      } else if (field.type === 'warehouse') {
+        names.add(typeByKey.get('warehouse')?.name ?? 'انبار');
+      }
+    }
+    return [...names];
+  }, [selected, typeByKey]);
+  const rollupCount = selected
+    ? selected.fields.filter((field) => field.type === 'rollup').length
+    : 0;
 
   return (
     <div>
       <PageHeader
         eyebrow="داده‌های پایه"
-        title="زمین مشترک سازمان."
-        description="طرف‌حساب‌ها، کالاها و انبارها؛ داده‌هایی که پرونده‌ها و فرم‌ها روی آن‌ها سوار می‌شوند."
+        title="هر داده‌ای که کسب‌وکار شما لازم دارد."
+        description="پارامترهای طرف‌حساب، کالا، انبار، گردش انبار و هر دادهٔ دلخواه دیگر را خودتان تعریف کنید؛ فیلدها بلافاصله در فرم فرآیندها و انتخابگرها در دسترس‌اند."
         actions={
-          <>
-            {tab === 'parties' && canParties ? (
-              <Button variant="ink" size="sm" icon={<Plus size={14} />} onClick={() => setPartyModal('new')}>
-                طرف‌حساب جدید
-              </Button>
-            ) : null}
-            {tab === 'items' && canItems ? (
-              <Button variant="ink" size="sm" icon={<Plus size={14} />} onClick={() => setItemModal('new')}>
-                کالای جدید
-              </Button>
-            ) : null}
-            {tab === 'warehouses' && canWarehouses ? (
-              <Button variant="ink" size="sm" icon={<Plus size={14} />} onClick={() => setWarehouseModal(true)}>
-                انبار جدید
-              </Button>
-            ) : null}
-            {tab === 'movements' && canMovements ? (
-              <Button variant="ink" size="sm" icon={<Plus size={14} />} onClick={() => setMovementModal(true)}>
-                ثبت گردش
-              </Button>
-            ) : null}
-          </>
+          canManage ? (
+            <Button
+              variant="ink"
+              size="sm"
+              icon={<Plus size={14} />}
+              onClick={() => setDesigner({ open: true, type: null })}
+            >
+              نوع داده جدید
+            </Button>
+          ) : null
         }
       />
 
       <Card className="overflow-hidden">
-        <div className="flex flex-col gap-2 border-b border-line px-3 pt-2 lg:flex-row lg:items-center lg:justify-between lg:pr-4">
-          <Tabs
-            value={tab}
-            onChange={(value) => {
-              if (!isMasterTab(value)) return;
-              setTab(value);
-              setSearch('');
-              setParams(
-                (current) => {
-                  const next = new URLSearchParams(current);
-                  next.set('tab', value);
-                  return next;
-                },
-                { replace: true },
-              );
-            }}
-            items={[
-              { value: 'parties', label: 'طرف‌حساب‌ها', count: parties.data?.length },
-              { value: 'items', label: 'کالاها', count: items.data?.length },
-              { value: 'warehouses', label: 'انبارها', count: warehouses.data?.length },
-              { value: 'movements', label: 'گردش انبار' },
-            ]}
-            className="border-0"
-          />
-          {hasSearch ? (
-            <div className="relative mb-2 w-full lg:mb-0 lg:w-64">
-              <MagnifyingGlass
-                size={14}
-                className="pointer-events-none absolute inset-y-0 start-3 my-auto text-ink-400"
-              />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder={tab === 'parties' ? 'نام، کد یا تماس…' : 'نام یا کد کالا…'}
-                className="focus-ring h-8 w-full rounded-lg border border-line bg-white/70 ps-8 pe-7 text-[11px] placeholder:text-ink-400 focus:border-copper-400"
-              />
-              {search ? (
-                <button
-                  type="button"
-                  onClick={() => setSearch('')}
-                  className="absolute inset-y-0 end-1.5 my-auto flex h-6 w-6 items-center justify-center rounded text-ink-400"
-                  aria-label="پاک کردن"
-                >
-                  <X size={12} />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-
-        {activeQuery.isError ? (
+        {types.isError ? (
           <div className="px-4 py-14 text-center">
-            <p className="text-sm font-semibold text-ink-800">دریافت داده‌ها ممکن نشد.</p>
-            <p className="mt-1 text-xs text-ink-400">{errorMessage(activeQuery.error)}</p>
-            <Button variant="paper" className="mt-4" onClick={() => void activeQuery.refetch()}>
+            <p className="text-sm font-semibold text-ink-800">دریافت داده‌های پایه ممکن نشد.</p>
+            <p className="mt-1 text-xs text-ink-400">{errorMessage(types.error)}</p>
+            <Button variant="paper" className="mt-4" onClick={() => void types.refetch()}>
               تلاش دوباره
             </Button>
           </div>
-        ) : activeQuery.isLoading ? (
-          <div className="divide-y divide-line/70">
-            {Array.from({ length: 6 }).map((_, index) => (
-              <div key={index} className="flex items-center gap-3 px-4 py-4">
-                <Skeleton className="h-8 w-8 rounded-lg" />
-                <div className="flex-1 space-y-2">
-                  <Skeleton className="h-3 w-1/3" />
-                  <Skeleton className="h-2 w-1/4" />
-                </div>
-              </div>
-            ))}
+        ) : types.isLoading ? (
+          <div className="grid gap-4 p-4 lg:grid-cols-[250px_1fr]">
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <Skeleton key={index} className="h-12 w-full rounded-lg" />
+              ))}
+            </div>
+            <Skeleton className="h-72 w-full rounded-xl" />
           </div>
-        ) : tab === 'parties' ? (
-          <PartiesTable
-            rows={parties.data ?? []}
-            canEdit={canParties}
-            onEdit={(party) => setPartyModal(party)}
-          />
-        ) : tab === 'items' ? (
-          <ItemsTable
-            rows={items.data ?? []}
-            canEdit={canItems}
-            onEdit={(item) => setItemModal(item)}
-          />
-        ) : tab === 'warehouses' ? (
-          <WarehousesTable rows={warehouses.data ?? []} />
         ) : (
-          <MovementsTable rows={movements.data ?? []} />
+          <div className="grid lg:grid-cols-[250px_1fr]">
+            <aside className="flex gap-2 overflow-x-auto border-b border-line p-3 lg:flex-col lg:overflow-visible lg:border-b-0 lg:border-e">
+              <TypeGroup
+                title="داده‌های اصلی"
+                types={systemTypes}
+                selectedId={selected?.id ?? null}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  setSearch('');
+                }}
+              />
+              <TypeGroup
+                title="داده‌های سفارشی"
+                types={customTypes}
+                selectedId={selected?.id ?? null}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  setSearch('');
+                }}
+                emptyHint={
+                  canManage ? 'با «نوع داده جدید» اولین دادهٔ خود را بسازید.' : undefined
+                }
+              />
+            </aside>
+
+            <section className="min-w-0">
+              {selected ? (
+                <>
+                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-semibold text-ink-900">{selected.name}</h2>
+                        {selected.isSystem ? (
+                          <Badge tone="neutral">سیستمی</Badge>
+                        ) : selected.isHierarchical ? (
+                          <Badge tone="copper">درختی</Badge>
+                        ) : null}
+                        <Badge tone="outline">{faNum(selected.recordCount)} رکورد</Badge>
+                      </div>
+                      <p className="mt-1 max-w-xl text-[11px] leading-5 text-ink-400">
+                        {selected.description || 'بدون توضیح'}
+                      </p>
+                      <p className="mt-1 text-[10px] text-ink-400">
+                        {faNum(selected.fields.length)} پارامتر
+                        {selected.isSystem
+                          ? ' — پارامترهای دلخواه خود را با «تنظیمات» اضافه کنید.'
+                          : ''}
+                      </p>
+                      {relationNames.length || rollupCount ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {relationNames.length ? (
+                            <span className="text-[10px] text-ink-400">
+                              بر اساس: {relationNames.join('، ')}
+                            </span>
+                          ) : null}
+                          {rollupCount ? (
+                            <Badge tone="copper">
+                              {faNum(rollupCount)} مقدار محاسبه‌شده
+                            </Badge>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {canManage ? (
+                        <Button
+                          variant="paper"
+                          size="sm"
+                          icon={<SlidersHorizontal size={13} />}
+                          onClick={() => setDesigner({ open: true, type: selected })}
+                        >
+                          تنظیمات و فیلدها
+                        </Button>
+                      ) : null}
+                      {canManage ? (
+                        <Button
+                          variant="ink"
+                          size="sm"
+                          icon={<Plus size={14} />}
+                          onClick={() => setRecordEditor({ type: selected, record: null })}
+                        >
+                          رکورد جدید
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="relative border-b border-line px-4 py-2">
+                    <MagnifyingGlass
+                      size={14}
+                      className="pointer-events-none absolute inset-y-0 start-7 my-auto text-ink-400"
+                    />
+                    <input
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="جستجو در این داده‌ها…"
+                      className="focus-ring h-8 w-full rounded-lg border border-line bg-paper-50/70 ps-8 pe-7 text-[11px] placeholder:text-ink-400 focus:border-copper-400"
+                    />
+                    {search ? (
+                      <button
+                        type="button"
+                        onClick={() => setSearch('')}
+                        className="absolute inset-y-0 end-6 my-auto flex h-6 w-6 items-center justify-center rounded text-ink-400"
+                        aria-label="پاک کردن"
+                      >
+                        <X size={12} />
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {records.isError ? (
+                    <div className="px-4 py-10 text-center">
+                      <p className="text-sm font-semibold text-ink-800">دریافت رکوردها ممکن نشد.</p>
+                      <p className="mt-1 text-xs text-ink-400">{errorMessage(records.error)}</p>
+                      <Button
+                        variant="paper"
+                        className="mt-4"
+                        onClick={() => void records.refetch()}
+                      >
+                        تلاش دوباره
+                      </Button>
+                    </div>
+                  ) : records.isLoading ? (
+                    <div className="space-y-2 p-4">
+                      {Array.from({ length: 5 }).map((_, index) => (
+                        <Skeleton key={index} className="h-11 w-full rounded-lg" />
+                      ))}
+                    </div>
+                  ) : !(records.data ?? []).length ? (
+                    <EmptyState
+                      icon={<Database size={20} />}
+                      title={search ? 'رکوردی پیدا نشد.' : 'هنوز رکوردی ثبت نشده است.'}
+                      description={
+                        search
+                          ? 'عبارت جستجو را تغییر دهید.'
+                          : 'اولین رکورد را اضافه کنید؛ همین حالا در فرم پرونده‌ها قابل انتخاب است.'
+                      }
+                      action={
+                        !search && canManage ? (
+                          <Button
+                            variant="ink"
+                            size="sm"
+                            icon={<Plus size={14} />}
+                            onClick={() => setRecordEditor({ type: selected, record: null })}
+                          >
+                            افزودن رکورد
+                          </Button>
+                        ) : undefined
+                      }
+                    />
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <div className="min-w-[640px]">
+                        <div
+                          className="grid gap-3 border-b border-line bg-paper-100/50 px-4 py-2 text-[9px] font-semibold text-ink-400"
+                          style={{ gridTemplateColumns: gridTemplate }}
+                        >
+                          {columns.map((column) => (
+                            <span key={column.key} className="truncate">
+                              {column.label}
+                            </span>
+                          ))}
+                          <span />
+                        </div>
+                        <div className="divide-y divide-line/70">
+                          {(records.data ?? []).map((record) => (
+                            <div
+                              key={record.id}
+                              className="grid items-center gap-3 px-4 py-2.5 hover:bg-paper-100/40"
+                              style={{ gridTemplateColumns: gridTemplate }}
+                            >
+                              {columns.map((column, index) => (
+                                <button
+                                  key={column.key}
+                                  type="button"
+                                  onClick={() =>
+                                    canManage
+                                      ? setRecordEditor({ type: selected, record })
+                                      : undefined
+                                  }
+                                  className={cn(
+                                    'min-w-0 truncate text-start text-[11px]',
+                                    index === 0
+                                      ? 'text-xs font-semibold text-ink-800'
+                                      : 'text-ink-500',
+                                    canManage ? 'cursor-pointer' : 'cursor-default',
+                                  )}
+                                  title={column.value(record)}
+                                >
+                                  {column.value(record)}
+                                </button>
+                              ))}
+                              <div className="flex items-center justify-end gap-0.5">
+                                {canManage ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => duplicate.mutate(record)}
+                                      className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-paper-100 hover:text-ink-700"
+                                      aria-label="کپی رکورد"
+                                      title="کپی"
+                                    >
+                                      <Copy size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setRecordEditor({ type: selected, record })}
+                                      className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-paper-100 hover:text-ink-700"
+                                      aria-label="ویرایش رکورد"
+                                      title="ویرایش"
+                                    >
+                                      <PencilSimple size={14} />
+                                    </button>
+                                    {selected.entity === 'custom' ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setDeleteTarget({ type: selected, record })}
+                                        className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-stamp-50 hover:text-stamp-600"
+                                        aria-label="حذف رکورد"
+                                        title="حذف"
+                                      >
+                                        <Trash size={13} />
+                                      </button>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {(records.data ?? []).length >= 500 ? (
+                          <p className="border-t border-line bg-ochre-50/60 px-4 py-2 text-[10px] leading-5 text-ochre-600">
+                            فقط ۵۰۰ رکورد نخست نمایش داده می‌شود؛ برای دیدن رکوردهای بیشتر از جستجو
+                            استفاده کنید.
+                          </p>
+                        ) : null}
+                        <div className="flex items-center justify-between border-t border-line bg-paper-100/40 px-4 py-2.5 text-[10px] text-ink-400">
+                          <span>
+                            {faNum((records.data ?? []).length)} رکورد از «{selected.name}»
+                          </span>
+                          <span>فیلدها و پارامترها را از «تنظیمات» تغییر دهید</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <EmptyState
+                  icon={<Database size={22} />}
+                  title="هنوز نوع داده‌ای بسازید."
+                  description="با ساخت یک نوع داده، پارامترهای دلخواه خود را تعریف کنید و در فرم‌های فرآیند استفاده کنید."
+                  action={
+                    canManage ? (
+                      <Button
+                        variant="ink"
+                        size="sm"
+                        icon={<Plus size={14} />}
+                        onClick={() => setDesigner({ open: true, type: null })}
+                      >
+                        ساخت نوع داده
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              )}
+            </section>
+          </div>
         )}
       </Card>
 
-      <PartyModal
-        value={partyModal}
-        onClose={() => setPartyModal(null)}
-        onSaved={() => {
-          void parties.refetch();
-          void items.refetch();
+      <FieldDesigner
+        open={designer.open}
+        type={designer.type}
+        types={typeList}
+        onClose={() => setDesigner({ open: false, type: null })}
+        onSaved={(saved) => setSelectedId(saved.id)}
+        onDeleted={() => {
+          setSelectedId((current) => {
+            const remaining = typeList.filter((type) => type.id !== current);
+            return remaining[0]?.id ?? null;
+          });
+          void types.refetch();
         }}
       />
-      <ItemModal
-        value={itemModal}
-        onClose={() => setItemModal(null)}
-        onSaved={() => {
-          void items.refetch();
-          void movements.refetch();
-        }}
-      />
-      <WarehouseModal
-        open={warehouseModal}
-        onClose={() => setWarehouseModal(false)}
-        onSaved={() => void warehouses.refetch()}
-      />
-      <MovementModal
-        open={movementModal}
-        onClose={() => setMovementModal(false)}
-        items={items.data ?? []}
-        warehouses={warehouses.data ?? []}
-        onSaved={() => {
-          void movements.refetch();
-          void items.refetch();
-        }}
-      />
+
+      {recordEditor ? (
+        <RecordModal
+          open
+          type={recordEditor.type}
+          record={recordEditor.record}
+          onClose={() => setRecordEditor(null)}
+        />
+      ) : null}
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="حذف رکورد"
+        size="sm"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)}>
+              انصراف
+            </Button>
+            <Button
+              variant="danger"
+              loading={remove.isPending}
+              onClick={() => deleteTarget && remove.mutate(deleteTarget.record)}
+            >
+              حذف
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm leading-7 text-ink-600">
+          «{deleteTarget?.record.title}» حذف شود؟ اگر در داده‌های دیگر استفاده شده باشد، حذف انجام
+          نمی‌شود.
+        </p>
+      </Modal>
     </div>
   );
 }
 
-function PartiesTable({
-  rows,
-  canEdit,
-  onEdit,
+function TypeGroup({
+  title,
+  types,
+  selectedId,
+  onSelect,
+  emptyHint,
 }: {
-  rows: PartyDto[];
-  canEdit: boolean;
-  onEdit: (party: PartyDto) => void;
+  title: string;
+  types: MasterDataTypeDto[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  emptyHint?: string;
 }) {
-  if (!rows.length) return <EmptyTable text="طرف‌حسابی ثبت نشده است." />;
   return (
-    <div>
-      <div className="hidden grid-cols-[minmax(0,1.6fr)_110px_170px_120px_40px] gap-3 border-b border-line bg-paper-100/50 px-4 py-2 text-[9px] font-semibold text-ink-400 md:grid">
-        <span>طرف‌حساب</span>
-        <span>نوع</span>
-        <span>تماس</span>
-        <span>کد</span>
-        <span />
-      </div>
-      <div className="divide-y divide-line/70">
-        {rows.map((party) => (
-          <div
-            key={party.id}
-            className="grid grid-cols-1 gap-2 px-4 py-3 md:grid-cols-[minmax(0,1.6fr)_110px_170px_120px_40px] md:items-center md:gap-3"
+    <div className="lg:w-full">
+      <p className="mb-1 hidden px-1 text-[9px] font-bold uppercase tracking-wide text-ink-400 lg:block">
+        {title}
+      </p>
+      <div className="flex gap-2 lg:flex-col lg:gap-0.5">
+        {types.map((type) => (
+          <button
+            key={type.id}
+            type="button"
+            onClick={() => onSelect(type.id)}
+            className={cn(
+              'focus-ring flex shrink-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-start transition lg:w-full',
+              selectedId === type.id
+                ? 'border-copper-300 bg-copper-50'
+                : 'border-transparent hover:border-line hover:bg-paper-100/70',
+            )}
           >
-            <div className="flex min-w-0 items-center gap-2.5">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
-                <UsersThree size={15} />
-              </span>
-              <div className="min-w-0">
-                <div className="truncate text-xs font-semibold text-ink-800">{party.name}</div>
-                <div className="mt-0.5 truncate text-[10px] text-ink-400">{party.address ?? 'بدون نشانی'}</div>
-              </div>
-            </div>
             <span
               className={cn(
-                'w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold',
-                party.kind === 'supplier'
-                  ? 'border-ochre-100 bg-ochre-50 text-ochre-600'
-                  : 'border-verdigris-100 bg-verdigris-50 text-verdigris-700',
+                'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border',
+                selectedId === type.id
+                  ? 'border-copper-200 bg-paper-50 text-copper-700'
+                  : 'border-line bg-paper-50 text-ink-500',
               )}
             >
-              {PARTY_KIND_LABELS[party.kind]}
+              {typeIcon(type.icon)}
             </span>
-            <div className="min-w-0 text-[10px] text-ink-500">
-              <div className="truncate" dir="ltr">
-                {party.phone ?? '—'}
-              </div>
-              <div className="mt-0.5 truncate text-ink-400" dir="ltr">
-                {party.email ?? '—'}
-              </div>
-            </div>
-            <span className="font-mono text-[10px] text-ink-400" dir="ltr">
-              {party.code}
-            </span>
-            <div className="flex justify-end">
-              {canEdit ? (
-                <button
-                  type="button"
-                  onClick={() => onEdit(party)}
-                  className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-paper-100 hover:text-ink-700"
-                  aria-label="ویرایش"
-                >
-                  <PencilSimple size={14} />
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ))}
-      </div>
-      <TableFooter count={rows.length} label="طرف‌حساب" />
-    </div>
-  );
-}
-
-function ItemsTable({
-  rows,
-  canEdit,
-  onEdit,
-}: {
-  rows: ItemDto[];
-  canEdit: boolean;
-  onEdit: (item: ItemDto) => void;
-}) {
-  if (!rows.length) return <EmptyTable text="کالایی ثبت نشده است." />;
-  return (
-    <div>
-      <div className="hidden grid-cols-[minmax(0,1.8fr)_100px_120px_110px_100px_40px] gap-3 border-b border-line bg-paper-100/50 px-4 py-2 text-[9px] font-semibold text-ink-400 md:grid">
-        <span>کالا</span>
-        <span>واحد</span>
-        <span>بهای واحد</span>
-        <span>موجودی</span>
-        <span>وضعیت</span>
-        <span />
-      </div>
-      <div className="divide-y divide-line/70">
-        {rows.map((item) => {
-          const low = typeof item.stock === 'number' && item.stock <= item.reorderPoint;
-          return (
-            <div
-              key={item.id}
-              className="grid grid-cols-1 gap-2 px-4 py-3 md:grid-cols-[minmax(0,1.8fr)_100px_120px_110px_100px_40px] md:items-center md:gap-3"
-            >
-              <div className="flex min-w-0 items-center gap-2.5">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
-                  <Package size={15} />
-                </span>
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-semibold text-ink-800">{item.name}</div>
-                  <div className="mt-0.5 font-mono text-[10px] text-ink-400" dir="ltr">
-                    {item.sku}
-                    {item.category ? ` · ${item.category}` : ''}
-                  </div>
-                </div>
-              </div>
-              <span className="text-[11px] text-ink-500">{item.unit}</span>
-              <span className="font-mono text-[10px] text-ink-500">{formatMoney(item.unitCost)}</span>
-              <span
-                className={cn(
-                  'font-mono text-xs font-semibold',
-                  low ? 'text-stamp-600' : 'text-ink-700',
-                )}
-              >
-                {faNum(item.stock ?? 0)}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[11px] font-semibold text-ink-800">
+                {type.name}
               </span>
-              <span
-                className={cn(
-                  'w-fit rounded-full border px-2 py-0.5 text-[9px] font-semibold',
-                  low
-                    ? 'border-stamp-100 bg-stamp-50 text-stamp-600'
-                    : 'border-verdigris-100 bg-verdigris-50 text-verdigris-700',
-                )}
-              >
-                {low ? 'نیاز به تأمین' : 'موجود'}
+              <span className="block truncate text-[9px] text-ink-400">
+                {faNum(type.recordCount)} رکورد
               </span>
-              <div className="flex justify-end">
-                {canEdit ? (
-                  <button
-                    type="button"
-                    onClick={() => onEdit(item)}
-                    className="focus-ring flex h-7 w-7 items-center justify-center rounded-md text-ink-400 hover:bg-paper-100 hover:text-ink-700"
-                    aria-label="ویرایش"
-                  >
-                    <PencilSimple size={14} />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <TableFooter count={rows.length} label="کالا" />
-    </div>
-  );
-}
-
-function WarehousesTable({ rows }: { rows: WarehouseDto[] }) {
-  if (!rows.length) return <EmptyTable text="انباری ثبت نشده است." />;
-  return (
-    <div>
-      <div className="divide-y divide-line/70">
-        {rows.map((warehouse) => (
-          <div key={warehouse.id} className="flex items-center gap-3 px-4 py-3.5">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
-              <Warehouse size={16} />
             </span>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-ink-800">{warehouse.name}</div>
-              <div className="mt-0.5 text-[10px] text-ink-400">{warehouse.location ?? 'بدون موقعیت'}</div>
-            </div>
-            <span className="font-mono text-[10px] text-ink-400" dir="ltr">
-              {warehouse.code}
-            </span>
-          </div>
+          </button>
         ))}
-      </div>
-      <TableFooter count={rows.length} label="انبار" />
-    </div>
-  );
-}
-
-function MovementsTable({ rows }: { rows: StockMovementRow[] }) {
-  if (!rows.length) return <EmptyTable text="گردشی ثبت نشده است." />;
-  return (
-    <div>
-      <div className="hidden grid-cols-[minmax(0,1.5fr)_110px_100px_100px_110px_110px] gap-3 border-b border-line bg-paper-100/50 px-4 py-2 text-[9px] font-semibold text-ink-400 md:grid">
-        <span>کالا</span>
-        <span>انبار</span>
-        <span>نوع</span>
-        <span>مقدار</span>
-        <span>ثبت‌کننده</span>
-        <span>تاریخ</span>
-      </div>
-      <div className="divide-y divide-line/70">
-        {rows.map((movement) => (
-          <div
-            key={movement.id}
-            className="grid grid-cols-1 gap-2 px-4 py-3 md:grid-cols-[minmax(0,1.5fr)_110px_100px_100px_110px_110px] md:items-center md:gap-3"
-          >
-            <div className="min-w-0">
-              <div className="truncate text-xs font-medium text-ink-800">{movement.itemName}</div>
-              {movement.reference ? (
-                <div className="mt-0.5 font-mono text-[9px] text-ink-400" dir="ltr">
-                  {movement.reference}
-                </div>
-              ) : null}
-            </div>
-            <span className="truncate text-[10px] text-ink-500">{movement.warehouseName}</span>
-            <span
-              className={cn(
-                'inline-flex w-fit items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold',
-                movement.type === 'in' && 'border-verdigris-100 bg-verdigris-50 text-verdigris-700',
-                movement.type === 'out' && 'border-stamp-100 bg-stamp-50 text-stamp-600',
-                movement.type === 'adjust' && 'border-line bg-paper-100 text-ink-500',
-              )}
-            >
-              {movement.type === 'in' ? <ArrowDown size={10} /> : movement.type === 'out' ? <ArrowUp size={10} /> : null}
-              {MOVEMENT_LABELS[movement.type]}
-            </span>
-            <span className="font-mono text-xs font-semibold text-ink-700">{faNum(movement.quantity)}</span>
-            <span className="truncate text-[10px] text-ink-400">{movement.createdByName ?? '—'}</span>
-            <span className="text-[10px] text-ink-400">{formatDate(movement.createdAt)}</span>
-          </div>
-        ))}
-      </div>
-      <TableFooter count={rows.length} label="گردش" />
-    </div>
-  );
-}
-
-function TableFooter({ count, label }: { count: number; label: string }) {
-  return (
-    <div className="flex items-center justify-between border-t border-line bg-paper-100/40 px-4 py-2.5 text-[10px] text-ink-400">
-      <span>
-        {faNum(count)} {label}
-      </span>
-      <span>آخرین به‌روزرسانی از سرور</span>
-    </div>
-  );
-}
-
-function EmptyTable({ text }: { text: string }) {
-  return (
-    <div className="px-4 py-14 text-center">
-      <Buildings size={26} className="mx-auto text-ink-300" />
-      <p className="mt-2 text-xs text-ink-400">{text}</p>
-    </div>
-  );
-}
-
-function PartyModal({
-  value,
-  onClose,
-  onSaved,
-}: {
-  value: PartyDto | 'new' | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const isNew = value === 'new';
-  const party = value && value !== 'new' ? value : null;
-  const [form, setForm] = useState({
-    kind: 'supplier' as 'supplier' | 'customer',
-    name: '',
-    code: '',
-    email: '',
-    phone: '',
-    taxId: '',
-    address: '',
-  });
-  const [error, setError] = useState('');
-  const [hydrated, setHydrated] = useState<string | null>(null);
-  const toast = useToast();
-  const queryClient = useQueryClient();
-
-  if (value && hydrated !== (party?.id ?? 'new')) {
-    setHydrated(party?.id ?? 'new');
-    setForm({
-      kind: party?.kind ?? 'supplier',
-      name: party?.name ?? '',
-      code: party?.code ?? '',
-      email: party?.email ?? '',
-      phone: party?.phone ?? '',
-      taxId: party?.taxId ?? '',
-      address: party?.address ?? '',
-    });
-    setError('');
-  }
-
-  const save = useMutation({
-    mutationFn: () =>
-      party
-        ? api.patch<PartyDto>(`/parties/${party.id}`, form)
-        : api.post<PartyDto>('/parties', form),
-    onSuccess: () => {
-      onSaved();
-      void queryClient.invalidateQueries({ queryKey: ['master-options'] });
-      toast.success(party ? 'طرف‌حساب به‌روز شد.' : 'طرف‌حساب ثبت شد.');
-      onClose();
-    },
-    onError: (caught) => setError(errorMessage(caught)),
-  });
-
-  return (
-    <Modal
-      open={Boolean(value)}
-      onClose={onClose}
-      title={party ? 'ویرایش طرف‌حساب' : 'طرف‌حساب جدید'}
-      size="md"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            انصراف
-          </Button>
-          <Button
-            variant="ink"
-            loading={save.isPending}
-            onClick={() => {
-              if (!form.name.trim() || !form.code.trim()) {
-                setError('نام و کد طرف‌حساب الزامی است.');
-                return;
-              }
-              save.mutate();
-            }}
-          >
-            ذخیره
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="نوع" required>
-          <Select
-            value={form.kind}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, kind: event.target.value as 'supplier' | 'customer' }))
-            }
-          >
-            <option value="supplier">تأمین‌کننده</option>
-            <option value="customer">مشتری</option>
-          </Select>
-        </Field>
-        <Field label="کد" required>
-          <Input
-            value={form.code}
-            onChange={(event) => setForm((current) => ({ ...current, code: event.target.value }))}
-            dir="ltr"
-          />
-        </Field>
-        <Field label="نام" required className="sm:col-span-2">
-          <Input
-            value={form.name}
-            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-          />
-        </Field>
-        <Field label="ایمیل">
-          <Input
-            value={form.email}
-            onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
-            dir="ltr"
-            type="email"
-          />
-        </Field>
-        <Field label="تلفن">
-          <Input
-            value={form.phone}
-            onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
-            dir="ltr"
-          />
-        </Field>
-        <Field label="شناسه مالیاتی">
-          <Input
-            value={form.taxId}
-            onChange={(event) => setForm((current) => ({ ...current, taxId: event.target.value }))}
-            dir="ltr"
-          />
-        </Field>
-        <Field label="نشانی" className="sm:col-span-2">
-          <Textarea
-            value={form.address}
-            onChange={(event) => setForm((current) => ({ ...current, address: event.target.value }))}
-            className="min-h-16"
-          />
-        </Field>
-      </div>
-      {error ? (
-        <p className="mt-3 rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
-          {error}
-        </p>
-      ) : null}
-    </Modal>
-  );
-}
-
-function ItemModal({
-  value,
-  onClose,
-  onSaved,
-}: {
-  value: ItemDto | 'new' | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const item = value && value !== 'new' ? value : null;
-  const [form, setForm] = useState({
-    sku: '',
-    name: '',
-    unit: 'عدد',
-    category: '',
-    unitCost: 0,
-    reorderPoint: 0,
-  });
-  const [error, setError] = useState('');
-  const [hydrated, setHydrated] = useState<string | null>(null);
-  const toast = useToast();
-  const queryClient = useQueryClient();
-
-  if (value && hydrated !== (item?.id ?? 'new')) {
-    setHydrated(item?.id ?? 'new');
-    setForm({
-      sku: item?.sku ?? '',
-      name: item?.name ?? '',
-      unit: item?.unit ?? 'عدد',
-      category: item?.category ?? '',
-      unitCost: item?.unitCost ?? 0,
-      reorderPoint: item?.reorderPoint ?? 0,
-    });
-    setError('');
-  }
-
-  const save = useMutation({
-    mutationFn: () =>
-      item
-        ? api.patch<ItemDto>(`/items/${item.id}`, {
-            ...form,
-            category: form.category || undefined,
-          })
-        : api.post<ItemDto>('/items', {
-            ...form,
-            category: form.category || undefined,
-          }),
-    onSuccess: () => {
-      onSaved();
-      void queryClient.invalidateQueries({ queryKey: ['master-options'] });
-      toast.success(item ? 'کالا به‌روز شد.' : 'کالا ثبت شد.');
-      onClose();
-    },
-    onError: (caught) => setError(errorMessage(caught)),
-  });
-
-  return (
-    <Modal
-      open={Boolean(value)}
-      onClose={onClose}
-      title={item ? 'ویرایش کالا' : 'کالای جدید'}
-      size="md"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            انصراف
-          </Button>
-          <Button
-            variant="ink"
-            loading={save.isPending}
-            onClick={() => {
-              if (!form.sku.trim() || !form.name.trim()) {
-                setError('کد و نام کالا الزامی است.');
-                return;
-              }
-              save.mutate();
-            }}
-          >
-            ذخیره
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="کد کالا" required>
-          <Input
-            value={form.sku}
-            onChange={(event) => setForm((current) => ({ ...current, sku: event.target.value }))}
-            dir="ltr"
-          />
-        </Field>
-        <Field label="واحد" required>
-          <Input
-            value={form.unit}
-            onChange={(event) => setForm((current) => ({ ...current, unit: event.target.value }))}
-          />
-        </Field>
-        <Field label="نام کالا" required className="sm:col-span-2">
-          <Input
-            value={form.name}
-            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-          />
-        </Field>
-        <Field label="دسته‌بندی">
-          <Input
-            value={form.category}
-            onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
-          />
-        </Field>
-        <Field label="بهای واحد (ریال)">
-          <Input
-            type="number"
-            value={String(form.unitCost)}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, unitCost: Number(event.target.value || 0) }))
-            }
-            dir="ltr"
-          />
-        </Field>
-        <Field label="نقطه سفارش">
-          <Input
-            type="number"
-            value={String(form.reorderPoint)}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, reorderPoint: Number(event.target.value || 0) }))
-            }
-            dir="ltr"
-          />
-        </Field>
-      </div>
-      {error ? (
-        <p className="mt-3 rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
-          {error}
-        </p>
-      ) : null}
-    </Modal>
-  );
-}
-
-function WarehouseModal({
-  open,
-  onClose,
-  onSaved,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState({ code: '', name: '', location: '' });
-  const [error, setError] = useState('');
-  const toast = useToast();
-  const queryClient = useQueryClient();
-  const save = useMutation({
-    mutationFn: () => api.post<WarehouseDto>('/warehouses', form),
-    onSuccess: () => {
-      onSaved();
-      void queryClient.invalidateQueries({ queryKey: ['master-options'] });
-      toast.success('انبار ثبت شد.');
-      setForm({ code: '', name: '', location: '' });
-      onClose();
-    },
-    onError: (caught) => setError(errorMessage(caught)),
-  });
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="انبار جدید"
-      size="sm"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            انصراف
-          </Button>
-          <Button
-            variant="ink"
-            loading={save.isPending}
-            onClick={() => {
-              if (!form.code.trim() || !form.name.trim()) {
-                setError('کد و نام انبار الزامی است.');
-                return;
-              }
-              save.mutate();
-            }}
-          >
-            ذخیره
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        <Field label="کد انبار" required>
-          <Input
-            value={form.code}
-            onChange={(event) => setForm((current) => ({ ...current, code: event.target.value }))}
-            dir="ltr"
-          />
-        </Field>
-        <Field label="نام انبار" required>
-          <Input
-            value={form.name}
-            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-          />
-        </Field>
-        <Field label="موقعیت">
-          <Input
-            value={form.location}
-            onChange={(event) => setForm((current) => ({ ...current, location: event.target.value }))}
-          />
-        </Field>
-        {error ? (
-          <p className="rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
-            {error}
-          </p>
+        {!types.length && emptyHint ? (
+          <p className="px-1 text-[10px] leading-5 text-ink-400">{emptyHint}</p>
         ) : null}
       </div>
-    </Modal>
-  );
-}
-
-function MovementModal({
-  open,
-  onClose,
-  items,
-  warehouses,
-  onSaved,
-}: {
-  open: boolean;
-  onClose: () => void;
-  items: ItemDto[];
-  warehouses: WarehouseDto[];
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState({
-    itemId: '',
-    warehouseId: '',
-    type: 'in' as 'in' | 'out' | 'adjust',
-    quantity: 1,
-    reference: '',
-    note: '',
-  });
-  const [error, setError] = useState('');
-  const toast = useToast();
-  const save = useMutation({
-    mutationFn: () => api.post('/stock/movements', { ...form, reference: form.reference || undefined, note: form.note || undefined }),
-    onSuccess: () => {
-      onSaved();
-      toast.success('گردش انبار ثبت شد.');
-      setForm((current) => ({ ...current, quantity: 1, reference: '', note: '' }));
-      onClose();
-    },
-    onError: (caught) => setError(errorMessage(caught)),
-  });
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="ثبت گردش انبار"
-      description="موجودی کالا بر اساس نوع گردش به‌روز می‌شود."
-      size="md"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            انصراف
-          </Button>
-          <Button
-            variant="ink"
-            loading={save.isPending}
-            onClick={() => {
-              if (!form.itemId || !form.warehouseId || form.quantity <= 0) {
-                setError('کالا، انبار و مقدار مثبت الزامی است.');
-                return;
-              }
-              save.mutate();
-            }}
-          >
-            ثبت گردش
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="کالا" required className="sm:col-span-2">
-          <Select
-            value={form.itemId}
-            onChange={(event) => setForm((current) => ({ ...current, itemId: event.target.value }))}
-          >
-            <option value="">انتخاب کالا…</option>
-            {items.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name} — {item.sku}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="انبار" required>
-          <Select
-            value={form.warehouseId}
-            onChange={(event) => setForm((current) => ({ ...current, warehouseId: event.target.value }))}
-          >
-            <option value="">انتخاب انبار…</option>
-            {warehouses.map((warehouse) => (
-              <option key={warehouse.id} value={warehouse.id}>
-                {warehouse.name}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Field label="نوع گردش" required>
-          <Select
-            value={form.type}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, type: event.target.value as 'in' | 'out' | 'adjust' }))
-            }
-          >
-            <option value="in">ورود</option>
-            <option value="out">خروج</option>
-            <option value="adjust">اصلاح موجودی</option>
-          </Select>
-        </Field>
-        <Field label="مقدار" required>
-          <Input
-            type="number"
-            min={0}
-            value={String(form.quantity)}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, quantity: Number(event.target.value || 0) }))
-            }
-            dir="ltr"
-          />
-        </Field>
-        <Field label="مرجع">
-          <Input
-            value={form.reference}
-            onChange={(event) => setForm((current) => ({ ...current, reference: event.target.value }))}
-            dir="ltr"
-          />
-        </Field>
-        <Field label="یادداشت" className="sm:col-span-2">
-          <Textarea
-            value={form.note}
-            onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))}
-            className="min-h-16"
-          />
-        </Field>
-      </div>
-      {error ? (
-        <p className="mt-3 rounded-lg border border-stamp-100 bg-stamp-50 px-3 py-2 text-[11px] leading-6 text-stamp-600">
-          {error}
-        </p>
-      ) : null}
-    </Modal>
+    </div>
   );
 }

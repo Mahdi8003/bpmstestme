@@ -3,10 +3,12 @@ import {
   CASE_STATUSES,
   FIELD_TYPES,
   FIELD_WIDTHS,
-  ROLE_KEYS,
+  ROLE_PERMISSIONS,
+  ROLLUP_OPS,
   TASK_OUTCOMES,
   TASK_STATUSES,
 } from './types.js';
+import type { FieldDef } from './types.js';
 
 export const fieldTypeSchema = z.enum(FIELD_TYPES);
 
@@ -21,30 +23,88 @@ export const conditionSchema = z.object({
   value: z.union([z.string(), z.number(), z.boolean()]),
 });
 
-export const fieldDefSchema = z.object({
-  key: z.string().min(1).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, 'کلید فیلد باید با حرف شروع شود'),
-  label: z.string().min(1),
-  type: fieldTypeSchema,
-  required: z.boolean().optional(),
-  placeholder: z.string().optional(),
-  help: z.string().optional(),
-  section: z.string().max(80).optional(),
-  width: z.enum(FIELD_WIDTHS).optional(),
-  readonly: z.boolean().optional(),
-  options: z.array(selectOptionSchema).optional(),
-  min: z.number().optional(),
-  max: z.number().optional(),
-  visibleWhen: conditionSchema.optional(),
+export const rollupSchema = z.object({
+  sourceTypeKey: z.string().min(1).max(60),
+  referenceField: z.string().min(1).max(60),
+  valueField: z.string().max(60).optional(),
+  op: z.enum(ROLLUP_OPS),
+});
+
+export const fieldDefSchema: z.ZodType<FieldDef> = z.lazy(() =>
+  z.object({
+    key: z.string().min(1).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, 'کلید فیلد باید با حرف شروع شود'),
+    label: z.string().min(1),
+    type: fieldTypeSchema,
+    required: z.boolean().optional(),
+    placeholder: z.string().optional(),
+    help: z.string().optional(),
+    section: z.string().max(80).optional(),
+    width: z.enum(FIELD_WIDTHS).optional(),
+    readonly: z.boolean().optional(),
+    hidden: z.boolean().optional(),
+    unique: z.boolean().optional(),
+    locked: z.boolean().optional(),
+    options: z.array(selectOptionSchema).optional(),
+    min: z.number().optional(),
+    max: z.number().optional(),
+    masterTypeKey: z.string().max(60).optional(),
+    rollup: rollupSchema.optional(),
+    visibleWhen: conditionSchema.optional(),
+    columns: z.array(fieldDefSchema).optional(),
+    minRows: z.number().int().min(0).optional(),
+    maxRows: z.number().int().min(1).optional(),
+    addLabel: z.string().max(80).optional(),
+  }),
+);
+
+export const roleKeySchema = z
+  .string()
+  .min(2)
+  .max(60)
+  .regex(/^[a-z][a-z0-9_]*$/, 'کلید نقش باید با حرف لاتین کوچک شروع شود.');
+
+export const rolePermissionSchema = z.enum(ROLE_PERMISSIONS);
+
+export const createRoleSchema = z.object({
+  key: roleKeySchema,
+  name: z.string().min(2).max(80),
+  description: z.string().max(300).optional().default(''),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'رنگ نقش باید به شکل #RRGGBB باشد.')
+    .optional(),
+  permissions: z.array(rolePermissionSchema).optional().default([]),
+});
+
+export const updateRoleSchema = z.object({
+  name: z.string().min(2).max(80).optional(),
+  description: z.string().max(300).optional(),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'رنگ نقش باید به شکل #RRGGBB باشد.')
+    .optional(),
+  permissions: z.array(rolePermissionSchema).optional(),
 });
 
 export const stagePermissionsSchema = z.object({
-  editRoles: z.array(z.enum(ROLE_KEYS)).optional(),
-  uploadRoles: z.array(z.enum(ROLE_KEYS)).optional(),
+  editRoles: z.array(z.string().min(1).max(60)).optional(),
+  uploadRoles: z.array(z.string().min(1).max(60)).optional(),
 });
 
 export const assigneeSchema = z.object({
   type: z.enum(['role', 'user', 'creator', 'manager']),
   value: z.string().optional(),
+});
+
+export const selectionCopySchema = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+});
+
+export const taskSelectionSchema = z.object({
+  sourceField: z.string().min(1),
+  labelColumn: z.string().min(1).optional(),
+  copy: z.array(selectionCopySchema).optional(),
 });
 
 export const taskDefSchema = z.object({
@@ -55,16 +115,27 @@ export const taskDefSchema = z.object({
   dueInHours: z.number().positive().optional(),
   formFields: z.array(z.string()).optional(),
   condition: conditionSchema.optional(),
-  kind: z.enum(['approval', 'action']).optional(),
+  kind: z.enum(['approval', 'action', 'selection']).optional(),
   requiredDocuments: z.array(z.string()).optional(),
+  selection: taskSelectionSchema.optional(),
+});
+
+export const stageTransitionSchema = z.object({
+  label: z.string().max(120).optional(),
+  condition: conditionSchema.optional(),
+  type: z.enum(['stage', 'case_type', 'end']),
+  stageKey: z.string().max(80).optional(),
+  caseTypeKey: z.string().max(80).optional(),
 });
 
 export const stageDefSchema = z.object({
-  key: z.string().min(1).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, 'کلید مرحله باید با حرف شروع شود'),
+  key: z.string().min(1).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, 'کلید مرحله باید با حرف انگلیسی شروع شود.'),
   name: z.string().min(1),
   description: z.string().optional(),
   color: z.string().optional(),
   permissions: stagePermissionsSchema.optional(),
+  fields: z.array(fieldDefSchema).optional(),
+  transitions: z.array(stageTransitionSchema).optional(),
   tasks: z.array(taskDefSchema),
 });
 
@@ -115,6 +186,7 @@ export const updateCaseTypeSchema = z.object({
   description: z.string().max(500).optional(),
   icon: z.string().min(1).optional(),
   referencePrefix: z.string().min(2).max(8).optional(),
+  ownerId: z.string().uuid().nullable().optional(),
   definition: caseTypeDefinitionSchema.optional(),
 });
 
@@ -132,6 +204,7 @@ export const updateCaseDataSchema = z.object({
 export const completeTaskSchema = z.object({
   data: z.record(z.unknown()).optional().default({}),
   comment: z.string().max(2000).optional(),
+  selectionRowKey: z.string().max(200).optional(),
 });
 
 export const decisionSchema = z.object({
@@ -153,19 +226,35 @@ export const commentSchema = z.object({
 
 export const loginSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(1),
+  password: z.string().min(1).max(200),
+});
+
+export const updateProfileSchema = z.object({
+  name: z.string().min(2).max(100).optional(),
+  jobTitle: z.string().max(100).optional(),
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(8).max(200),
+});
+
+export const resetPasswordSchema = z.object({
+  newPassword: z.string().min(8).max(200),
 });
 
 export const createUserSchema = z.object({
   name: z.string().min(2).max(100),
   email: z.string().email(),
   password: z.string().min(8).max(100),
-  role: z.enum(ROLE_KEYS),
+  role: roleKeySchema,
   jobTitle: z.string().max(100).optional(),
 });
 
 export const updateUserSchema = z.object({
-  role: z.enum(ROLE_KEYS).optional(),
+  name: z.string().min(2).max(100).optional(),
+  email: z.string().email().optional(),
+  role: roleKeySchema.optional(),
   isActive: z.boolean().optional(),
   jobTitle: z.string().max(100).optional(),
 });
@@ -195,6 +284,29 @@ export const warehouseSchema = z.object({
   location: z.string().max(200).optional(),
 });
 
+export const masterDataTypeSchema = z.object({
+  key: z
+    .string()
+    .min(1)
+    .max(60)
+    .regex(/^[a-zA-Z][a-zA-Z0-9_]*$/, 'کلید نوع داده باید با حرف لاتین شروع شود.'),
+  name: z.string().min(2).max(120),
+  description: z.string().max(500).optional(),
+  icon: z.string().max(40).optional(),
+  titleField: z.string().max(60).nullable().optional(),
+  isHierarchical: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).max(9999).optional(),
+  fields: z.array(fieldDefSchema).min(1).max(100),
+});
+
+export const masterDataTypeUpdateSchema = masterDataTypeSchema
+  .omit({ key: true })
+  .partial();
+
+export const masterDataRecordSchema = z.object({
+  data: z.record(z.unknown()),
+});
+
 export const stockMovementSchema = z.object({
   itemId: z.string().uuid(),
   warehouseId: z.string().uuid(),
@@ -206,15 +318,17 @@ export const stockMovementSchema = z.object({
 
 export const taskListQuerySchema = z.object({
   scope: z.enum(['mine', 'available', 'all', 'completed']).optional().default('mine'),
-  q: z.string().optional(),
+  q: z.string().max(200).optional(),
   limit: z.coerce.number().min(1).max(200).optional().default(100),
+  offset: z.coerce.number().min(0).optional().default(0),
 });
 
 export const caseListQuerySchema = z.object({
   status: z.enum(CASE_STATUSES).optional(),
-  type: z.string().optional(),
-  q: z.string().optional(),
+  type: z.string().uuid().optional(),
+  q: z.string().max(200).optional(),
   limit: z.coerce.number().min(1).max(200).optional().default(100),
+  offset: z.coerce.number().min(0).optional().default(0),
 });
 
 export const taskStatusSchema = z.enum(TASK_STATUSES);

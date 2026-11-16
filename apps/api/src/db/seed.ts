@@ -14,6 +14,7 @@ import { db, pool } from './client.js';
 import { env } from '../env.js';
 import { hashPassword } from '../lib/password.js';
 import { createReference } from '../lib/numbering.js';
+import { builtinRoleSeedValues } from '../modules/roles/service.js';
 import {
   caseComments,
   caseEvents,
@@ -24,6 +25,7 @@ import {
   items,
   notifications,
   parties,
+  roles,
   stockMovements,
   tenants,
   users,
@@ -262,7 +264,7 @@ export async function seed(): Promise<void> {
     throw new Error('Seeding demo data is not allowed in production.');
   }
 
-  await pool.query('TRUNCATE TABLE tenants CASCADE');
+  await pool.query('DELETE FROM tenants WHERE slug = $1', ['ravand']);
 
   await db.transaction(async (tx) => {
     const [tenant] = await tx
@@ -271,7 +273,9 @@ export async function seed(): Promise<void> {
       .returning();
     if (!tenant) throw new Error('Could not insert tenant');
 
-    const passwordHash = hashPassword(DEMO_PASSWORD);
+    await tx.insert(roles).values(builtinRoleSeedValues(tenant.id));
+
+    const passwordHash = await hashPassword(DEMO_PASSWORD);
     const insertedUsers = await tx
       .insert(users)
       .values(
@@ -527,23 +531,26 @@ export async function seed(): Promise<void> {
         title: 'خرید دو لپ‌تاپ برای تیم طراحی',
         data: {
           subject: 'خرید دو لپ‌تاپ برای تیم طراحی',
-          vendor: partyId('SUP-002'),
-          amount: 185_000_000,
           neededBy: '1405-08-20',
-          items: '۲ دستگاه لپ‌تاپ ۱۴ اینچ با مشخصات استاندارد تیم طراحی',
           justification: 'تجهیزات فعلی فرسوده شده و سرعت کار تیم طراحی افت کرده است.',
+          requestItems: [
+            { _key: 'item-1', item: requiredItemId('LAP-014'), quantity: 2, specs: '۱۴ اینچ، ۱۶ گیگابایت رم' },
+            { _key: 'item-2', item: requiredItemId('NET-024'), quantity: 1, specs: 'سوییچ مدیریتی ۲۴ پورت' },
+          ],
+          estimatedTotal: 185_000_000,
         },
-        stageKey: 'review',
+        stageKey: 'request_approval',
         status: 'in_progress',
         createdBy: memberId,
         createdAt: daysAgo(1),
         tasks: [
           {
-            stageKey: 'review',
-            taskKey: 'procurement_review',
-            name: 'بررسی و تکمیل درخواست',
+            stageKey: 'request_approval',
+            taskKey: 'request_manager_approval',
+            name: 'تأیید درخواست خرید',
+            kind: 'approval',
             status: 'pending',
-            assigneeRole: 'procurement',
+            assigneeRole: 'manager',
             dueAt: hoursFromNow(18),
           },
         ],
@@ -562,36 +569,58 @@ export async function seed(): Promise<void> {
         title: 'خرید تجهیزات شبکه برای شعبه مرکزی',
         data: {
           subject: 'خرید تجهیزات شبکه برای شعبه مرکزی',
-          vendor: partyId('SUP-002'),
-          amount: 92_000_000,
           neededBy: '1405-08-12',
-          items: '۲ دستگاه سوییچ ۲۴ پورت و لوازم نصب',
           justification: 'توسعه شبکه شعبه مرکزی و نیاز به پورت‌های اضافه.',
+          requestItems: [
+            { _key: 'item-1', item: requiredItemId('NET-024'), quantity: 2, specs: 'سوییچ ۲۴ پورت' },
+            { _key: 'item-2', item: requiredItemId('PAP-A4'), quantity: 3, specs: 'کارتن کاغذ A4' },
+          ],
+          estimatedTotal: 92_000_000,
+          quotes: [
+            {
+              _key: 'quote-1',
+              supplier: partyId('SUP-002'),
+              amount: 92_000_000,
+              deliveryDays: 7,
+              validUntil: '1405-08-10',
+              quoteFile: null,
+              notes: 'تحویل در محل شعبه مرکزی',
+            },
+            {
+              _key: 'quote-2',
+              supplier: partyId('SUP-001'),
+              amount: 96_500_000,
+              deliveryDays: 4,
+              validUntil: '1405-08-08',
+              quoteFile: null,
+              notes: 'امکان تحویل سریع‌تر',
+            },
+          ],
         },
-        stageKey: 'approval',
+        stageKey: 'quote_collection',
         status: 'in_progress',
         priority: 'high',
         createdBy: memberId,
         createdAt: daysAgo(3),
         tasks: [
           {
-            stageKey: 'review',
-            taskKey: 'procurement_review',
-            name: 'بررسی و تکمیل درخواست',
+            stageKey: 'request_approval',
+            taskKey: 'request_manager_approval',
+            name: 'تأیید درخواست خرید',
+            kind: 'approval',
             status: 'completed',
-            outcome: 'completed',
-            assigneeRole: 'procurement',
+            outcome: 'approved',
+            assigneeRole: 'manager',
             dueAt: daysAgo(2),
             completedAt: daysAgo(2),
-            data: { vendor: partyId('SUP-002'), amount: 92_000_000 },
+            data: {},
           },
           {
-            stageKey: 'approval',
-            taskKey: 'manager_approval',
-            name: 'تأیید مدیر',
-            kind: 'approval',
+            stageKey: 'quote_collection',
+            taskKey: 'collect_quotes',
+            name: 'ثبت پیش‌فاکتورها',
             status: 'pending',
-            assigneeRole: 'manager',
+            assigneeRole: 'procurement',
             dueAt: hoursFromNow(6),
           },
         ],

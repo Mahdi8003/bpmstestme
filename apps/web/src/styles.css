@@ -2,54 +2,62 @@
 
 @theme {
   --font-sans: 'Vazirmatn Variable', ui-sans-serif, system-ui, sans-serif;
-  --font-display: 'Estedad Variable', 'Vazirmatn Variable', ui-sans-serif, sans-serif;
+  --font-display: 'Vazirmatn Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
-  --color-paper-50: #fbfcf8;
-  --color-paper-100: #f4f6f0;
-  --color-paper-200: #e8ece3;
-  --color-paper-300: #d8dfd3;
-  --color-paper-400: #c2ccbd;
-  --color-line: #d5dcd1;
+  --color-paper-0: #ffffff;
+  --color-paper-50: #ffffff;
+  --color-paper-100: #f2f5f8;
+  --color-paper-200: #e7ecf1;
+  --color-paper-300: #d4dde6;
+  --color-paper-400: #b8c4d0;
+  --color-line: #d9e1e8;
 
-  --color-ink-950: #10212d;
-  --color-ink-900: #172b39;
-  --color-ink-800: #213b4b;
-  --color-ink-700: #315364;
-  --color-ink-600: #48687a;
-  --color-ink-500: #647f8f;
-  --color-ink-400: #8aa0ac;
-  --color-ink-300: #b3c1c8;
+  --color-ink-950: #0a1929;
+  --color-ink-900: #12263a;
+  --color-ink-800: #1a344c;
+  --color-ink-700: #284b66;
+  --color-ink-600: #3e647e;
+  --color-ink-500: #5c7b91;
+  --color-ink-400: #7f97a9;
+  --color-ink-300: #adbecc;
 
-  --color-copper-700: #763e27;
-  --color-copper-600: #8c4c2f;
-  --color-copper-500: #a95f3d;
-  --color-copper-400: #bf7a55;
-  --color-copper-300: #d4a184;
-  --color-copper-200: #e8c8b6;
-  --color-copper-100: #f3e4d9;
-  --color-copper-50: #faf2ec;
+  --color-copper-800: #0b3a5c;
+  --color-copper-700: #0e4a75;
+  --color-copper-600: #155a8c;
+  --color-copper-500: #1d6fa5;
+  --color-copper-400: #4b8fbb;
+  --color-copper-300: #82b2d0;
+  --color-copper-200: #bad7e7;
+  --color-copper-100: #d9eaf4;
+  --color-copper-50: #edf6fb;
 
-  --color-verdigris-700: #29483f;
-  --color-verdigris-600: #345a4e;
-  --color-verdigris-500: #406b5d;
-  --color-verdigris-400: #5f8779;
-  --color-verdigris-100: #dfe9e2;
-  --color-verdigris-50: #eef4ef;
+  --color-verdigris-700: #155e52;
+  --color-verdigris-600: #1b7264;
+  --color-verdigris-500: #238a78;
+  --color-verdigris-400: #4ea695;
+  --color-verdigris-200: #b3ded4;
+  --color-verdigris-100: #d6e9e4;
+  --color-verdigris-50: #edf7f4;
 
-  --color-stamp-600: #9a4038;
-  --color-stamp-500: #b04d43;
-  --color-stamp-100: #f2dedb;
-  --color-stamp-50: #faf0ee;
+  --color-stamp-700: #7f1f1a;
+  --color-stamp-600: #a12a23;
+  --color-stamp-500: #bd3a32;
+  --color-stamp-100: #f5dcd9;
+  --color-stamp-50: #fdf2f0;
 
-  --color-ochre-600: #9a6b22;
-  --color-ochre-500: #b4832f;
-  --color-ochre-100: #f4e8cf;
-  --color-ochre-50: #fbf5e8;
+  --color-ochre-600: #8a5a0c;
+  --color-ochre-500: #a66e12;
+  --color-ochre-400: #c58d38;
+  --color-ochre-100: #f4e5c8;
+  --color-ochre-50: #fdf7e8;
 
-  --shadow-folio: 0 1px 0 rgb(16 33 45 / 0.03), 0 24px 48px -34px rgb(16 33 45 / 0.22);
-  --shadow-lift: 0 18px 40px -26px rgb(16 33 45 / 0.32);
-  --radius-folio: 14px;
+  --color-on-accent: #ffffff;
+  --color-scrim: #0a1929;
+
+  --shadow-folio: 0 1px 2px rgb(10 25 41 / 0.04), 0 8px 24px -22px rgb(10 25 41 / 0.24);
+  --shadow-lift: 0 18px 40px -20px rgb(10 25 41 / 0.26);
+  --radius-folio: 10px;
 }
 
 @layer base {
@@ -60,6 +68,63 @@
   html {
     color-scheme: light;
     scroll-behavior: smooth;
+  }
+
+  html.dark {
+    color-scheme: dark;
+
+    --color-paper-0: #18232e;
+    --color-paper-50: #131c26;
+    --color-paper-100: #0b131b;
+    --color-paper-200: #1b2733;
+    --color-paper-300: #273542;
+    --color-paper-400: #3e5060;
+    --color-line: #243240;
+
+    --color-ink-950: #f5f8fb;
+    --color-ink-900: #e7eef4;
+    --color-ink-800: #d6e1e9;
+    --color-ink-700: #bfcdd8;
+    --color-ink-600: #a9bac6;
+    --color-ink-500: #94a7b5;
+    --color-ink-400: #8699a7;
+    --color-ink-300: #6a7d8c;
+
+    --color-copper-800: #cfe6f4;
+    --color-copper-700: #a5d0e8;
+    --color-copper-600: #7bbcdf;
+    --color-copper-500: #3f95c6;
+    --color-copper-400: #2f7ea9;
+    --color-copper-300: #216079;
+    --color-copper-200: #1b4557;
+    --color-copper-100: #143545;
+    --color-copper-50: #102a37;
+
+    --color-verdigris-700: #8ad7c3;
+    --color-verdigris-600: #63c5ae;
+    --color-verdigris-500: #37a48e;
+    --color-verdigris-400: #2c8574;
+    --color-verdigris-200: #1b5147;
+    --color-verdigris-100: #143a33;
+    --color-verdigris-50: #102b25;
+
+    --color-stamp-700: #ffb3ac;
+    --color-stamp-600: #f2938a;
+    --color-stamp-500: #e0685b;
+    --color-stamp-100: #43221e;
+    --color-stamp-50: #2d1714;
+
+    --color-ochre-600: #e8c078;
+    --color-ochre-500: #dbaa52;
+    --color-ochre-400: #c8923c;
+    --color-ochre-100: #3b2d14;
+    --color-ochre-50: #2b2112;
+
+    --color-on-accent: #07131c;
+    --color-scrim: #03090f;
+
+    --shadow-folio: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -22px rgb(0 0 0 / 0.7);
+    --shadow-lift: 0 18px 40px -20px rgb(0 0 0 / 0.7);
   }
 
   body {
@@ -89,8 +154,8 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-copper-500);
-    outline-offset: 3px;
+    outline: none;
+    border-color: var(--color-copper-400);
   }
 
   h1,
@@ -148,6 +213,17 @@
     border-radius: var(--radius-folio);
   }
 
+  /* Brand surface: keeps the light-on-navy palette in both themes. */
+  .brand-panel {
+    --color-paper-0: #ffffff;
+    --color-paper-50: #ffffff;
+    --color-paper-100: #f2f5f8;
+    --color-ink-950: #0a1929;
+    --color-copper-200: #bad7e7;
+    --color-copper-400: #4b8fbb;
+    --color-verdigris-400: #4ea695;
+  }
+
   .file-cut {
     clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
   }
@@ -155,6 +231,10 @@
   .paper-dots {
     background-image: radial-gradient(rgb(23 43 57 / 0.09) 0.6px, transparent 0.6px);
     background-size: 14px 14px;
+  }
+
+  .dark .paper-dots {
+    background-image: radial-gradient(rgb(255 255 255 / 0.07) 0.6px, transparent 0.6px);
   }
 
   .hairline {
@@ -172,8 +252,8 @@
   }
 
   .focus-ring:focus-visible {
-    outline: 2px solid var(--color-copper-500);
-    outline-offset: 3px;
+    outline: none;
+    border-color: var(--color-copper-400);
   }
 }
 

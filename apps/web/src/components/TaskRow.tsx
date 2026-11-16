@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom';
 import type { TaskDto } from '@ravand/shared';
 import { CaretLeft, UserCircle } from '@phosphor-icons/react';
-import { dueInfo, roleLabel } from '@/lib/format';
+import { dueInfo } from '@/lib/format';
+import { useRoleName } from '@/lib/roles';
 import { cn } from './ui';
 import { DueChip, TaskKindBadge, TaskStatusBadge } from './domain';
 
@@ -15,6 +16,7 @@ export function TaskRow({
   className?: string;
 }) {
   const late = dueInfo(task.dueAt).tone === 'late';
+  const roleName = useRoleName();
   return (
     <Link
       to={`/tasks/${task.id}`}
@@ -25,7 +27,7 @@ export function TaskRow({
       )}
     >
       {late ? <span className="absolute inset-y-2 right-0 w-0.5 rounded-full bg-stamp-500" /> : null}
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-white text-ink-500">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-paper-50 text-ink-500">
         <UserCircle size={17} />
       </span>
       <div className="min-w-0 flex-1">
@@ -58,9 +60,15 @@ export function TaskRow({
           ) : task.candidateRole ? (
             <>
               <span className="text-ink-300">·</span>
-              <span>برای {roleLabel(task.candidateRole)}</span>
+              <span>برای {roleName(task.candidateRole)}</span>
             </>
           ) : null}
+          <span className="sm:hidden">
+            <TaskStatusBadge status={task.status} />
+          </span>
+          <span className="sm:hidden">
+            <DueChip value={task.dueAt} />
+          </span>
         </div>
       </div>
       <div className="hidden shrink-0 flex-col items-end gap-1.5 sm:flex">

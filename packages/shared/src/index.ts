@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './schemas.js';
+export * from './fields.js';
 export * from './rules.js';
 export * from './validation.js';
 export * from './health.js';

@@ -1,6 +1,6 @@
-import { useDeferredValue, useState } from 'react';
+import { useDeferredValue, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import {
   CASE_STATUSES,
   CASE_STATUS_LABELS,
@@ -12,13 +12,15 @@ import { CaretLeft, FolderSimple, MagnifyingGlass, X } from '@phosphor-icons/rea
 import { api, errorMessage } from '@/lib/api';
 import { faNum } from '@/lib/format';
 import { PageHeader } from '@/components/PageHeader';
-import { Button, Card, EmptyState, Skeleton, cn } from '@/components/ui';
+import { Button, Card, EmptyState, Skeleton, Spinner, cn } from '@/components/ui';
 import {
   CaseTypeIcon,
   DueChip,
   PriorityBadge,
   StatusBadge,
 } from '@/components/domain';
+
+const PAGE_SIZE = 50;
 
 export function CasesPage() {
   const [params, setParams] = useSearchParams();
@@ -34,23 +36,38 @@ export function CasesPage() {
     setParams(next, { replace: true });
   };
 
+  useEffect(() => {
+    const current = params.get('q') ?? '';
+    const nextValue = deferredSearch.trim();
+    if (current === nextValue) return;
+    const next = new URLSearchParams(params);
+    if (nextValue) next.set('q', nextValue);
+    else next.delete('q');
+    setParams(next, { replace: true });
+  }, [deferredSearch, params, setParams]);
+
   const types = useQuery({
     queryKey: ['case-types'],
     queryFn: () => api.get<CaseTypeSummary[]>('/case-types'),
     staleTime: 60_000,
   });
 
-  const cases = useQuery({
+  const cases = useInfiniteQuery({
     queryKey: ['cases', status, type, deferredSearch],
-    queryFn: () => {
-      const query = new URLSearchParams({ limit: '200' });
+    queryFn: ({ pageParam }) => {
+      const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(pageParam) });
       if (status) query.set('status', status);
       if (type) query.set('type', type);
       if (deferredSearch.trim()) query.set('q', deferredSearch.trim());
       return api.get<CaseListItem[]>(`/cases?${query.toString()}`);
     },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length === PAGE_SIZE ? allPages.length * PAGE_SIZE : undefined,
     placeholderData: (previous) => previous,
   });
+
+  const items = cases.data?.pages.flatMap((page) => page) ?? [];
 
   const hasFilters = Boolean(status || type || search);
   const publishedTypes = (types.data ?? []).filter((item) => item.status === 'published');
@@ -82,7 +99,7 @@ export function CasesPage() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="جستجو در عنوان یا شماره پرونده…"
-              className="focus-ring h-9 w-full rounded-lg border border-line bg-white/70 ps-9 pe-8 text-xs text-ink-800 placeholder:text-ink-400 focus:border-copper-400 focus:bg-white"
+              className="focus-ring h-9 w-full rounded-lg border border-line bg-paper-50/70 ps-9 pe-8 text-xs text-ink-800 placeholder:text-ink-400 focus:border-copper-400 focus:bg-paper-50"
             />
             {search ? (
               <button
@@ -99,7 +116,7 @@ export function CasesPage() {
             <select
               value={type}
               onChange={(event) => setFilter('type', event.target.value)}
-              className="focus-ring h-9 min-w-36 rounded-lg border border-line bg-white/70 px-2.5 text-[11px] text-ink-600 focus:border-copper-400"
+              className="focus-ring h-9 min-w-36 rounded-lg border border-line bg-paper-50/70 px-2.5 text-[11px] text-ink-600 focus:border-copper-400"
               aria-label="نوع پرونده"
             >
               <option value="">همه انواع</option>
@@ -112,7 +129,7 @@ export function CasesPage() {
             <select
               value={status}
               onChange={(event) => setFilter('status', event.target.value)}
-              className="focus-ring h-9 min-w-28 rounded-lg border border-line bg-white/70 px-2.5 text-[11px] text-ink-600 focus:border-copper-400"
+              className="focus-ring h-9 min-w-28 rounded-lg border border-line bg-paper-50/70 px-2.5 text-[11px] text-ink-600 focus:border-copper-400"
               aria-label="وضعیت پرونده"
             >
               <option value="">همه وضعیت‌ها</option>
@@ -140,7 +157,7 @@ export function CasesPage() {
         <div className="hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_130px_100px_16px] gap-3 border-b border-line bg-paper-100/55 px-4 py-2 text-[9px] font-semibold tracking-wide text-ink-400 sm:grid">
           <span>پرونده</span>
           <span>نوع / مرحله</span>
-          <span>مسئول</span>
+          <span>مسئول / ثبت‌کننده</span>
           <span>وضعیت</span>
           <span />
         </div>
@@ -166,16 +183,31 @@ export function CasesPage() {
               </div>
             ))}
           </div>
-        ) : cases.data?.length ? (
+        ) : items.length ? (
           <>
             <div className="divide-y divide-line/70">
-              {cases.data.map((item) => (
+              {items.map((item) => (
                 <CaseTableRow key={item.id} item={item} />
               ))}
             </div>
             <div className="flex items-center justify-between border-t border-line bg-paper-100/40 px-4 py-2.5 text-[10px] text-ink-400">
-              <span>{faNum(cases.data.length)} پرونده</span>
-              <span>مرتب‌شده بر اساس آخرین حرکت</span>
+              <span className="flex items-center gap-1.5">
+                {cases.isFetching && !cases.isLoading ? <Spinner size={11} /> : null}
+                {faNum(items.length)} پرونده
+                {cases.hasNextPage ? ' · موارد بیشتری موجود است' : ''}
+              </span>
+              {cases.hasNextPage ? (
+                <Button
+                  variant="paper"
+                  size="sm"
+                  loading={cases.isFetchingNextPage}
+                  onClick={() => void cases.fetchNextPage()}
+                >
+                  نمایش بیشتر
+                </Button>
+              ) : (
+                <span>مرتب‌شده بر اساس آخرین حرکت</span>
+              )}
             </div>
           </>
         ) : (
@@ -202,7 +234,7 @@ function CaseTableRow({ item }: { item: CaseListItem }) {
       className="focus-ring group grid grid-cols-1 gap-2 px-4 py-3.5 transition-colors hover:bg-paper-100/70 sm:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_130px_100px_16px] sm:items-center sm:gap-3"
     >
       <div className="flex min-w-0 items-center gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-500">
           <CaseTypeIcon icon={item.caseTypeIcon} size={17} />
         </span>
         <div className="min-w-0">
@@ -216,7 +248,7 @@ function CaseTableRow({ item }: { item: CaseListItem }) {
             </span>
             <span className="text-ink-300">·</span>
             <span className="sm:hidden">{item.caseTypeName}</span>
-            <span className="md:hidden">
+            <span className="sm:hidden">
               <StatusBadge status={item.status} />
             </span>
           </div>

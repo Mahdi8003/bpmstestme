@@ -23,7 +23,7 @@ export function CaseRow({
     >
       <span
         className={cn(
-          'flex shrink-0 items-center justify-center rounded-lg border border-line bg-white text-ink-500',
+          'flex shrink-0 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-500',
           compact ? 'h-8 w-8' : 'h-10 w-10',
         )}
       >

@@ -5,7 +5,7 @@ import multipart from '@fastify/multipart';
 import { ZodError } from 'zod';
 import { env } from './env.js';
 import { AppError } from './lib/errors.js';
-import { closeDb } from './db/client.js';
+import { closeDb, pool } from './db/client.js';
 import { registerAdminRoutes } from './modules/admin/routes.js';
 import { registerAuthRoutes } from './modules/auth/routes.js';
 import { registerCaseTypeRoutes } from './modules/case-types/routes.js';
@@ -14,6 +14,7 @@ import { registerDashboardRoutes } from './modules/dashboard/routes.js';
 import { registerInsightRoutes } from './modules/insights/routes.js';
 import { registerMasterDataRoutes } from './modules/master-data/routes.js';
 import { registerNotificationRoutes } from './modules/notifications/routes.js';
+import { registerRoleRoutes } from './modules/roles/routes.js';
 import { registerSearchRoutes } from './modules/search/routes.js';
 import { registerTaskRoutes } from './modules/tasks/routes.js';
 
@@ -28,8 +29,17 @@ export async function buildApp(): Promise<FastifyInstance> {
             },
           }
         : true,
-    trustProxy: true,
+    trustProxy: (env.NODE_ENV === 'production' ? 1 : true) as boolean,
     bodyLimit: 2 * 1024 * 1024,
+  });
+
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    reply.header('Cross-Origin-Resource-Policy', 'same-site');
+    return payload;
   });
 
   await app.register(cors, {
@@ -53,10 +63,32 @@ export async function buildApp(): Promise<FastifyInstance> {
       });
     }
     if (error instanceof AppError) {
+      if (error.retryAfterSeconds) {
+        reply.header('Retry-After', String(error.retryAfterSeconds));
+      }
       return reply.status(error.statusCode).send({
         code: error.code,
         message: error.message,
         details: error.details,
+      });
+    }
+    const pgCode = (error as { code?: string }).code;
+    if (pgCode === '22P02') {
+      return reply.status(400).send({
+        code: 'BAD_REQUEST',
+        message: 'شناسه یا مقدار ارسالی معتبر نیست.',
+      });
+    }
+    if (pgCode === '23505') {
+      return reply.status(409).send({
+        code: 'CONFLICT',
+        message: 'این مقدار قبلاً ثبت شده است.',
+      });
+    }
+    if (pgCode === '23503' || pgCode === '23502') {
+      return reply.status(400).send({
+        code: 'BAD_REQUEST',
+        message: 'اطلاعات ارسالی با داده‌های موجود سازگار نیست.',
       });
     }
     const fastifyError = error as {
@@ -98,11 +130,26 @@ export async function buildApp(): Promise<FastifyInstance> {
     });
   });
 
-  app.get('/api/health', async () => ({
-    ok: true,
-    name: 'ravand-api',
-    time: new Date().toISOString(),
-  }));
+  app.get('/api/health', async (request, reply) => {
+    try {
+      await pool.query('select 1');
+      return {
+        ok: true,
+        name: 'ravand-api',
+        database: 'up',
+        time: new Date().toISOString(),
+      };
+    } catch (error) {
+      request.log.error(error);
+      reply.code(503);
+      return {
+        ok: false,
+        name: 'ravand-api',
+        database: 'down',
+        time: new Date().toISOString(),
+      };
+    }
+  });
 
   await app.register(
     async (api) => {
@@ -114,6 +161,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       await registerInsightRoutes(api);
       await registerMasterDataRoutes(api);
       await registerNotificationRoutes(api);
+      await registerRoleRoutes(api);
       await registerAdminRoutes(api);
       await registerSearchRoutes(api);
     },

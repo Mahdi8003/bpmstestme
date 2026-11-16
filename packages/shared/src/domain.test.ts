@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   CASE_TYPE_TEMPLATES,
+  caseTypeDefinitionSchema,
   checkCaseTypeHealth,
   evaluateCondition,
   formatReference,
   getJalaliYear,
   validateCaseData,
+  type CaseTypeDefinition,
 } from './index.js';
 
 describe('rule engine', () => {
@@ -77,6 +79,38 @@ describe('validation', () => {
     expect(issues.map((issue) => issue.field)).toEqual(['tags', 'email', 'phone']);
   });
 
+  it('validates table rows and enforces minimum rows', () => {
+    const fields = [
+      {
+        key: 'items',
+        label: 'اقلام',
+        type: 'table' as const,
+        required: true,
+        minRows: 1,
+        columns: [
+          { key: 'item', label: 'کالا', type: 'item' as const, required: true },
+          { key: 'qty', label: 'مقدار', type: 'number' as const, required: true },
+        ],
+      },
+    ];
+    expect(validateCaseData(fields, { items: [] })).toHaveLength(1);
+    expect(
+      validateCaseData(fields, {
+        items: [{ item: 'not-a-uuid', qty: 'abc' }],
+      }),
+    ).toHaveLength(2);
+    expect(
+      validateCaseData(fields, {
+        items: [
+          {
+            item: '11111111-1111-4111-8111-111111111111',
+            qty: 2,
+          },
+        ],
+      }),
+    ).toHaveLength(0);
+  });
+
   it('accepts valid multiselect options and skips hidden fields', () => {
     const fields = [
       { key: 'amount', label: 'مبلغ', type: 'currency' as const },
@@ -108,10 +142,79 @@ describe('validation', () => {
 describe('health checks', () => {
   it('accepts every bundled template', () => {
     for (const template of CASE_TYPE_TEMPLATES) {
+      const parsed = caseTypeDefinitionSchema.safeParse(template.definition);
+      expect(parsed.success ? [] : parsed.error.issues).toEqual([]);
       const health = checkCaseTypeHealth(template.definition);
       expect(health.issues.filter((issue) => issue.level === 'error')).toEqual([]);
       expect(health.ok).toBe(true);
     }
+  });
+
+  it('validates selection tasks against their source table', () => {
+    const definition: CaseTypeDefinition = {
+      fields: [
+        {
+          key: 'quotes',
+          label: 'پیش‌فاکتورها',
+          type: 'table',
+          columns: [
+            { key: 'supplier', label: 'تأمین‌کننده', type: 'party' },
+            { key: 'amount', label: 'مبلغ', type: 'currency' },
+          ],
+        },
+        { key: 'selectedSupplier', label: 'انتخاب‌شده', type: 'party', hidden: true },
+      ],
+      stages: [
+        {
+          key: 'collect',
+          name: 'جمع‌آوری',
+          tasks: [
+            {
+              key: 'collect_task',
+              name: 'ثبت',
+              assignee: { type: 'role', value: 'procurement' },
+              formFields: ['quotes'],
+            },
+          ],
+        },
+        {
+          key: 'select',
+          name: 'انتخاب',
+          tasks: [
+            {
+              key: 'select_task',
+              name: 'انتخاب',
+              kind: 'selection',
+              assignee: { type: 'role', value: 'manager' },
+              selection: {
+                sourceField: 'quotes',
+                labelColumn: 'supplier',
+                copy: [{ from: 'supplier', to: 'selectedSupplier' }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    expect(checkCaseTypeHealth(definition).ok).toBe(true);
+
+    const broken: CaseTypeDefinition = {
+      ...definition,
+      stages: definition.stages.map((stage) =>
+        stage.key === 'select'
+          ? {
+              ...stage,
+              tasks: [
+                {
+                  ...stage.tasks[0]!,
+                  selection: { sourceField: 'missing', copy: [] },
+                },
+              ],
+            }
+          : stage,
+      ),
+    };
+    expect(checkCaseTypeHealth(broken).ok).toBe(false);
   });
 
   it('detects duplicate task keys and missing fields', () => {
@@ -145,6 +248,49 @@ describe('health checks', () => {
     });
     expect(health.ok).toBe(false);
     expect(health.issues.some((issue) => issue.message.includes('تکراری'))).toBe(true);
+  });
+
+  it('validates tenant-defined roles and direct user assignments', () => {
+    const userId = '8a3f6f5c-3f3b-4a8d-9f3c-1f16d6f2a111';
+    const definition: CaseTypeDefinition = {
+      fields: [{ key: 'subject', label: 'Subject', type: 'text', required: true }],
+      stages: [
+        {
+          key: 'receive',
+          name: 'Receive',
+          tasks: [
+            {
+              key: 'warehouse_task',
+              name: 'Warehouse check',
+              assignee: { type: 'role', value: 'warehouse_manager' },
+            },
+            {
+              key: 'owner_task',
+              name: 'Owner task',
+              assignee: { type: 'user', value: userId },
+            },
+          ],
+        },
+      ],
+    };
+
+    const accepted = checkCaseTypeHealth(definition, {
+      knownRoles: ['warehouse_manager'],
+      knownUserIds: [userId],
+    });
+    expect(accepted.issues.filter((issue) => issue.level === 'error')).toEqual([]);
+    expect(accepted.ok).toBe(true);
+
+    const rejected = checkCaseTypeHealth(definition, {
+      knownRoles: ['member'],
+      knownUserIds: [],
+    });
+    expect(rejected.ok).toBe(false);
+    expect(
+      rejected.issues.filter(
+        (issue) => issue.path === 'stages.receive.tasks.owner_task',
+      ),
+    ).not.toHaveLength(0);
   });
 });
 

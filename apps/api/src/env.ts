@@ -14,3 +14,14 @@ const envSchema = z.object({
 });
 
 export const env = envSchema.parse(process.env);
+
+if (env.NODE_ENV === 'production') {
+  if (env.COOKIE_SECRET.length < 32 || env.COOKIE_SECRET.includes('change-me')) {
+    throw new Error(
+      'COOKIE_SECRET must be a strong, unique value (32+ chars) in production.',
+    );
+  }
+  if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL must be set in production.');
+  }
+}

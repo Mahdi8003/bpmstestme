@@ -53,9 +53,14 @@ export function formatMoneyCompact(value: number | string | null | undefined): s
   return formatMoney(parsed);
 }
 
+function toDate(value: string | Date): Date {
+  if (value instanceof Date) return value;
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00` : value);
+}
+
 export function formatDate(value: string | Date | null | undefined): string {
   if (!value) return '—';
-  const date = value instanceof Date ? value : new Date(value);
+  const date = toDate(value);
   if (Number.isNaN(date.getTime())) return '—';
   return dateFormat.format(date);
 }
@@ -76,7 +81,7 @@ export function formatLongDate(value: string | Date = new Date()): string {
 
 export function formatDateTime(value: string | Date | null | undefined): string {
   if (!value) return '—';
-  const date = value instanceof Date ? value : new Date(value);
+  const date = toDate(value);
   if (Number.isNaN(date.getTime())) return '—';
   return `${dateFormat.format(date)}، ${timeFormat.format(date)}`;
 }
@@ -97,7 +102,9 @@ export function relativeTime(value: string | Date | null | undefined): string {
   const days = Math.round(hours / 24);
   if (Math.abs(days) < 30) return relativeFormat.format(days, 'day');
   const months = Math.round(days / 30);
-  return relativeFormat.format(months, 'month');
+  if (Math.abs(months) < 12) return relativeFormat.format(months, 'month');
+  const years = Math.round(months / 12);
+  return relativeFormat.format(years, 'year');
 }
 
 export interface DueInfo {
@@ -127,6 +134,21 @@ export function roleLabel(role: RoleKey | string): string {
   return ROLE_LABELS[role as RoleKey] ?? role;
 }
 
+/** مسئول کار: نام کاربر، یا نقشی که منتظر برداشتن کار است. */
+export function taskAssigneeLabel(
+  task: {
+    assigneeName?: string | null;
+    candidateRole?: string | null;
+  },
+  resolveRole?: (role: string) => string,
+): string {
+  if (task.assigneeName) return task.assigneeName;
+  if (task.candidateRole) {
+    return `در انتظار ${resolveRole ? resolveRole(task.candidateRole) : roleLabel(task.candidateRole)}`;
+  }
+  return 'بدون مسئول';
+}
+
 export function priorityLabel(priority: CasePriority): string {
   return { low: 'کم', normal: 'معمولی', high: 'فوری' }[priority];
 }
@@ -149,6 +171,7 @@ export function titleForPath(pathname: string): string {
   if (pathname.startsWith('/data')) return 'داده‌های پایه';
   if (pathname.startsWith('/insights')) return 'گزارش‌ها';
   if (pathname.startsWith('/notifications')) return 'اعلان‌ها';
+  if (pathname.startsWith('/profile')) return 'پروفایل';
   if (pathname.startsWith('/admin')) return 'مدیریت';
   return 'روند';
 }

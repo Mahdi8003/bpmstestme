@@ -15,6 +15,34 @@
       "when": 1793042727408,
       "tag": "0001_cultured_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794166314378,
+      "tag": "0002_aspiring_daimon_hellstrom",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794330621909,
+      "tag": "0003_known_shadowcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794506355646,
+      "tag": "0004_petite_steve_rogers",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794523496576,
+      "tag": "0005_redundant_captain_flint",
+      "breakpoints": true
     }
   ]
 }

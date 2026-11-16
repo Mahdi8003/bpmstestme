@@ -1,5 +1,5 @@
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { env } from '../env.js';
@@ -42,4 +42,10 @@ export function openStoredFile(storagePath: string) {
   const absolute = resolveStoredFile(storagePath);
   if (!absolute) return null;
   return createReadStream(absolute);
+}
+
+export async function removeStoredFile(storagePath: string): Promise<void> {
+  const absolute = resolveStoredFile(storagePath);
+  if (!absolute) return;
+  await unlink(absolute);
 }

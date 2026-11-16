@@ -1,8 +1,11 @@
-import { and, asc, desc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
+  ROLE_LABELS,
+  allDefinitionFields,
   validateCaseData,
   type CaseDetail,
+  type CaseLink,
   type CaseListItem,
   type CaseTypeDefinition,
   type CommentDto,
@@ -21,7 +24,10 @@ import {
   caseTypeVersions,
   cases,
   items,
+  masterDataRecords,
+  masterDataTypes,
   parties,
+  roles,
   users,
   warehouses,
 } from '../../db/schema.js';
@@ -30,7 +36,9 @@ import { createReference } from '../../lib/numbering.js';
 import { AppError, badRequest, forbidden, notFound } from '../../lib/errors.js';
 import { validateReferenceFields } from '../../lib/domain-validation.js';
 import { notifyUsers } from '../../lib/notifications.js';
+import { removeStoredFile } from '../../lib/files.js';
 import type { AuthContext } from '../../lib/auth.js';
+import { assertCanViewCase, caseVisibilityFilter } from '../../lib/visibility.js';
 import { getCaseType, publishedTypeForCase } from '../case-types/service.js';
 import { taskDto } from './dto.js';
 import {
@@ -45,7 +53,7 @@ const creatorUser = alias(users, 'creator_user');
 const assigneeUser = alias(users, 'assignee_user');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function resolveTitleFromField(
+export async function resolveTitleFromField(
   field: FieldDef | undefined,
   value: unknown,
   tenantId: string,
@@ -74,6 +82,26 @@ async function resolveTitleFromField(
         .limit(1)
     )[0];
     return row?.name ?? String(value);
+  }
+  if (field.type === 'master') {
+    const id = typeof value === 'string' ? value : '';
+    if (!UUID_PATTERN.test(id) || !field.masterTypeKey) return String(value);
+    const row = (
+      await db
+        .select({ title: masterDataRecords.title })
+        .from(masterDataRecords)
+        .innerJoin(masterDataTypes, eq(masterDataTypes.id, masterDataRecords.typeId))
+        .where(
+          and(
+            eq(masterDataRecords.id, id),
+            eq(masterDataRecords.tenantId, tenantId),
+            eq(masterDataTypes.tenantId, tenantId),
+            eq(masterDataTypes.key, field.masterTypeKey),
+          ),
+        )
+        .limit(1)
+    )[0];
+    return row?.title ?? String(value);
   }
   if (field.type === 'party' || field.type === 'item' || field.type === 'warehouse') {
     const id = typeof value === 'string' ? value : '';
@@ -127,7 +155,15 @@ function listItem(row: {
   updatedAt: Date;
   createdByName: string | null;
   assigneeName: string | null;
-}): CaseListItem {
+  responsibleName?: string | null;
+  responsibleRole?: string | null;
+}, roleNames?: Map<string, string>): CaseListItem {
+  const roleLabel = row.responsibleRole
+    ? (roleNames?.get(row.responsibleRole) ??
+      ROLE_LABELS[row.responsibleRole as keyof typeof ROLE_LABELS] ??
+      row.responsibleRole)
+    : null;
+  const responsible = row.assigneeName ?? row.responsibleName ?? (roleLabel ? `در انتظار ${roleLabel}` : null);
   return {
     id: row.id,
     reference: row.reference,
@@ -143,15 +179,23 @@ function listItem(row: {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     createdByName: row.createdByName,
-    assigneeName: row.assigneeName,
+    assigneeName: responsible,
   };
 }
 
 export async function listCases(
   auth: AuthContext,
-  query: { status?: CaseRow['status']; type?: string; q?: string; limit: number },
+  query: {
+    status?: CaseRow['status'];
+    type?: string;
+    q?: string;
+    limit: number;
+    offset?: number;
+  },
 ): Promise<CaseListItem[]> {
   const conditions = [eq(cases.tenantId, auth.tenantId)];
+  const visibility = caseVisibilityFilter(auth);
+  if (visibility) conditions.push(visibility);
   if (query.status) conditions.push(eq(cases.status, query.status));
   if (query.type) conditions.push(eq(cases.caseTypeId, query.type));
   if (query.q?.trim()) {
@@ -177,6 +221,27 @@ export async function listCases(
       updatedAt: cases.updatedAt,
       createdByName: creatorUser.name,
       assigneeName: assigneeUser.name,
+      responsibleName: sql<string | null>`(
+        select task_assignee.name
+        from case_tasks task
+        join users task_assignee on task_assignee.id = task.assignee_id
+        where task.case_id = ${cases.id}
+          and task.tenant_id = ${cases.tenantId}
+          and task.assignee_id is not null
+          and task.status in ('pending', 'claimed', 'waiting_info')
+        order by task.created_at asc
+        limit 1
+      )`,
+      responsibleRole: sql<string | null>`(
+        select task.candidate_role
+        from case_tasks task
+        where task.case_id = ${cases.id}
+          and task.tenant_id = ${cases.tenantId}
+          and task.candidate_role is not null
+          and task.status in ('pending', 'claimed', 'waiting_info')
+        order by task.created_at asc
+        limit 1
+      )`,
     })
     .from(cases)
     .innerJoin(caseTypes, eq(caseTypes.id, cases.caseTypeId))
@@ -184,9 +249,26 @@ export async function listCases(
     .leftJoin(assigneeUser, eq(assigneeUser.id, cases.assigneeId))
     .where(and(...conditions))
     .orderBy(desc(cases.updatedAt))
-    .limit(query.limit);
+    .limit(query.limit)
+    .offset(query.offset ?? 0);
 
-  return rows.map(listItem);
+  const customRoleKeys = [
+    ...new Set(
+      rows
+        .map((row) => row.responsibleRole)
+        .filter((key): key is string => Boolean(key) && !ROLE_LABELS[key as string]),
+    ),
+  ];
+  let roleNames: Map<string, string> | undefined;
+  if (customRoleKeys.length) {
+    const roleRows = await db
+      .select({ key: roles.key, name: roles.name })
+      .from(roles)
+      .where(and(eq(roles.tenantId, auth.tenantId), inArray(roles.key, customRoleKeys)));
+    roleNames = new Map(roleRows.map((row) => [row.key, row.name]));
+  }
+
+  return rows.map((row) => listItem(row, roleNames));
 }
 
 export async function getCaseRow(
@@ -256,6 +338,31 @@ function canUploadAtStage(
   return Boolean(stage?.permissions?.uploadRoles?.includes(auth.user.role));
 }
 
+/**
+ * Drops unknown keys and preserves read-only fields from the stored record so a
+ * client cannot smuggle values that are not part of the process definition.
+ */
+function pickDefinitionData(
+  definition: CaseTypeDefinition,
+  input: Record<string, unknown>,
+  previous?: Record<string, unknown>,
+  fields: FieldDef[] = allDefinitionFields(definition),
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const field of fields) {
+    if ((field.readonly || field.hidden) && previous) {
+      next[field.key] = previous[field.key];
+    } else if (field.hidden) {
+      continue;
+    } else if (Object.prototype.hasOwnProperty.call(input, field.key)) {
+      next[field.key] = input[field.key];
+    } else if (previous && Object.prototype.hasOwnProperty.call(previous, field.key)) {
+      next[field.key] = previous[field.key];
+    }
+  }
+  return next;
+}
+
 export async function getCaseDetail(
   auth: AuthContext,
   id: string,
@@ -281,6 +388,7 @@ export async function getCaseDetail(
   const row = rows[0];
   if (!row) throw notFound('پرونده پیدا نشد.');
   const caseRow = row.caseRow;
+  await assertCanViewCase(auth, caseRow);
 
   const taskRows = await db
     .select({ task: caseTasks, assigneeName: assigneeUser.name })
@@ -309,6 +417,62 @@ export async function getCaseDetail(
     .leftJoin(creatorUser, eq(creatorUser.id, caseEvents.actorId))
     .where(eq(caseEvents.caseId, caseRow.id))
     .orderBy(asc(caseEvents.createdAt));
+
+  const linkSelection = {
+    id: cases.id,
+    reference: cases.reference,
+    title: cases.title,
+    status: cases.status,
+    stageName: cases.stageName,
+    caseTypeName: caseTypes.name,
+    caseTypeIcon: caseTypes.icon,
+    createdAt: cases.createdAt,
+  };
+  const visibility = caseVisibilityFilter(auth);
+  const parentConditions = [
+    eq(cases.tenantId, auth.tenantId),
+    eq(cases.id, caseRow.parentCaseId ?? '00000000-0000-0000-0000-000000000000'),
+  ];
+  if (visibility) parentConditions.push(visibility);
+  const parentRows = caseRow.parentCaseId
+    ? await db
+        .select(linkSelection)
+        .from(cases)
+        .innerJoin(caseTypes, eq(caseTypes.id, cases.caseTypeId))
+        .where(and(...parentConditions))
+        .limit(1)
+    : [];
+  const childConditions = [
+    eq(cases.tenantId, auth.tenantId),
+    eq(cases.parentCaseId, caseRow.id),
+  ];
+  if (visibility) childConditions.push(visibility);
+  const childRows = await db
+    .select(linkSelection)
+    .from(cases)
+    .innerJoin(caseTypes, eq(caseTypes.id, cases.caseTypeId))
+    .where(and(...childConditions))
+    .orderBy(asc(cases.createdAt));
+
+  const caseLink = (link: {
+    id: string;
+    reference: string;
+    title: string;
+    status: CaseRow['status'];
+    stageName: string;
+    caseTypeName: string;
+    caseTypeIcon: string;
+    createdAt: Date;
+  }): CaseLink => ({
+    id: link.id,
+    reference: link.reference,
+    title: link.title,
+    status: link.status,
+    stageName: link.stageName,
+    caseTypeName: link.caseTypeName,
+    caseTypeIcon: link.caseTypeIcon,
+    createdAt: link.createdAt.toISOString(),
+  });
 
   const hasActiveTask = taskRows.some(
     ({ task }) =>
@@ -383,6 +547,8 @@ export async function getCaseDetail(
         createdAt: event.createdAt.toISOString(),
       }),
     ),
+    parentCase: parentRows[0] ? caseLink(parentRows[0]) : null,
+    childCases: childRows.map(caseLink),
     canEdit,
     canUpload,
     canCancel:
@@ -397,8 +563,9 @@ export async function createCase(
 ): Promise<CaseDetail> {
   const { caseType, version } = await publishedTypeForCase(auth, input.caseTypeId);
   const definition = version.definition;
-  const issues = validateCaseData(definition.fields, input.data);
-  issues.push(...(await validateReferenceFields(db, auth.tenantId, definition.fields, input.data)));
+  const data = pickDefinitionData(definition, input.data, undefined, definition.fields);
+  const issues = validateCaseData(definition.fields, data);
+  issues.push(...(await validateReferenceFields(db, auth.tenantId, definition.fields, data)));
   if (issues.length) {
     throw badRequest('اطلاعات پرونده کامل یا معتبر نیست.', issues);
   }
@@ -411,7 +578,7 @@ export async function createCase(
     : undefined;
   const titleFromData = await resolveTitleFromField(
     titleFieldDef,
-    titleField ? input.data[titleField] : undefined,
+    titleField ? data[titleField] : undefined,
     auth.tenantId,
   );
   const title = input.title?.trim() || titleFromData || caseType.name;
@@ -430,7 +597,7 @@ export async function createCase(
         stageKey: firstStage.key,
         stageName: firstStage.name,
         priority: definition.settings?.priority ?? 'normal',
-        data: input.data,
+        data,
         createdBy: auth.userId,
       })
       .returning();
@@ -490,9 +657,23 @@ export async function updateCaseData(
     throw forbidden('شما در مرحلهٔ فعلی اجازهٔ ویرایش این پرونده را ندارید.');
   }
 
-  const issues = validateCaseData(definition.fields, input.data);
+  const allFields = allDefinitionFields(definition);
+  const data = pickDefinitionData(definition, input.data, caseRow.data, allFields);
+  const issues = validateCaseData(definition.fields, data);
+  const providedStageFields = allFields
+    .filter(
+      (field) =>
+        !definition.fields.some((globalField) => globalField.key === field.key) &&
+        Object.prototype.hasOwnProperty.call(input.data, field.key),
+    )
+    .map((field) => field.key);
+  if (providedStageFields.length) {
+    issues.push(
+      ...validateCaseData(allFields, data, { onlyFields: providedStageFields }),
+    );
+  }
   issues.push(
-    ...(await validateReferenceFields(db, auth.tenantId, definition.fields, input.data)),
+    ...(await validateReferenceFields(db, auth.tenantId, allFields, data, caseRow.id)),
   );
   if (issues.length) throw badRequest('اطلاعات پرونده کامل یا معتبر نیست.', issues);
 
@@ -502,7 +683,7 @@ export async function updateCaseData(
     : undefined;
   const titleFromData = await resolveTitleFromField(
     titleFieldDef,
-    titleField ? input.data[titleField] : undefined,
+    titleField ? data[titleField] : undefined,
     auth.tenantId,
   );
   const title = input.title?.trim() || titleFromData || caseRow.title;
@@ -510,7 +691,7 @@ export async function updateCaseData(
   await db.transaction(async (tx) => {
     await tx
       .update(cases)
-      .set({ title, data: input.data, updatedAt: new Date() })
+      .set({ title, data, updatedAt: new Date() })
       .where(and(eq(cases.id, id), eq(cases.tenantId, auth.tenantId)));
     await addCaseEvent(tx, {
       tenantId: auth.tenantId,
@@ -526,7 +707,7 @@ export async function updateCaseData(
       entityType: 'case',
       entityId: id,
       before: { title: caseRow.title, data: caseRow.data },
-      after: { title, data: input.data },
+      after: { title, data },
     });
   });
   return getCaseDetail(auth, id);
@@ -539,6 +720,7 @@ export async function addComment(
   taskId?: string | null,
 ): Promise<CommentDto> {
   const caseRow = await getCaseRow(auth, caseId);
+  await assertCanViewCase(auth, caseRow);
   if (taskId) {
     const taskRows = await db
       .select({ id: caseTasks.id })
@@ -606,6 +788,42 @@ export async function addComment(
   };
 }
 
+export async function authorizeDocumentUpload(
+  auth: AuthContext,
+  caseId: string,
+  documentKey?: string | null,
+  taskId?: string | null,
+): Promise<{ caseRow: CaseRow; definition: CaseTypeDefinition }> {
+  if (!UUID_PATTERN.test(caseId)) {
+    throw badRequest('شناسهٔ پرونده معتبر نیست.');
+  }
+  const caseRow = await getCaseRow(auth, caseId);
+  await assertCanViewCase(auth, caseRow);
+  const definition = await definitionForCase(caseRow);
+  const hasActiveTask = await hasActiveTaskOnCase(auth, caseRow.id);
+  if (!canUploadAtStage(auth, caseRow, definition, hasActiveTask)) {
+    throw forbidden('در مرحلهٔ فعلی اجازهٔ بارگذاری مدرک ندارید.');
+  }
+  if (documentKey && !(definition.documents ?? []).some((item) => item.key === documentKey)) {
+    throw badRequest('نوع مدرک انتخاب‌شده در این فرآیند تعریف نشده است.');
+  }
+  if (taskId) {
+    const taskRows = await db
+      .select({ id: caseTasks.id })
+      .from(caseTasks)
+      .where(
+        and(
+          eq(caseTasks.id, taskId),
+          eq(caseTasks.caseId, caseRow.id),
+          eq(caseTasks.tenantId, auth.tenantId),
+        ),
+      )
+      .limit(1);
+    if (!taskRows[0]) throw badRequest('کار موردنظر به این پرونده تعلق ندارد.');
+  }
+  return { caseRow, definition };
+}
+
 export async function addDocument(
   auth: AuthContext,
   caseId: string,
@@ -618,12 +836,12 @@ export async function addDocument(
     taskId?: string | null;
   },
 ): Promise<DocumentDto> {
-  const caseRow = await getCaseRow(auth, caseId);
-  const definition = await definitionForCase(caseRow);
-  const hasActiveTask = await hasActiveTaskOnCase(auth, caseRow.id);
-  if (!canUploadAtStage(auth, caseRow, definition, hasActiveTask)) {
-    throw forbidden('در مرحلهٔ فعلی اجازهٔ بارگذاری مدرک ندارید.');
-  }
+  const { caseRow } = await authorizeDocumentUpload(
+    auth,
+    caseId,
+    input.documentKey,
+    input.taskId,
+  );
   const [document] = await db
     .insert(caseDocuments)
     .values({
@@ -667,8 +885,9 @@ export async function addDocument(
 
 export async function getDocumentForDownload(auth: AuthContext, documentId: string) {
   const rows = await db
-    .select()
+    .select({ document: caseDocuments, caseRow: cases })
     .from(caseDocuments)
+    .innerJoin(cases, eq(cases.id, caseDocuments.caseId))
     .where(
       and(
         eq(caseDocuments.id, documentId),
@@ -678,7 +897,83 @@ export async function getDocumentForDownload(auth: AuthContext, documentId: stri
     .limit(1);
   const row = rows[0];
   if (!row) throw notFound('مدرک پیدا نشد.');
-  return row;
+  await assertCanViewCase(auth, row.caseRow);
+  return row.document;
+}
+
+export async function deleteDocument(
+  auth: AuthContext,
+  caseId: string,
+  documentId: string,
+): Promise<void> {
+  const caseRow = await getCaseRow(auth, caseId);
+  await assertCanViewCase(auth, caseRow);
+  const rows = await db
+    .select()
+    .from(caseDocuments)
+    .where(
+      and(
+        eq(caseDocuments.id, documentId),
+        eq(caseDocuments.caseId, caseRow.id),
+        eq(caseDocuments.tenantId, auth.tenantId),
+      ),
+    )
+    .limit(1);
+  const document = rows[0];
+  if (!document) throw notFound('مدرک پیدا نشد.');
+  const definition = await definitionForCase(caseRow);
+  const hasActiveTask = await hasActiveTaskOnCase(auth, caseRow.id);
+  const canDelete =
+    auth.user.role === 'admin' ||
+    document.uploadedBy === auth.userId ||
+    canUploadAtStage(auth, caseRow, definition, hasActiveTask);
+  if (!canDelete) throw forbidden('اجازهٔ حذف این مدرک را ندارید.');
+  if (document.taskId) {
+    const taskRows = await db
+      .select({ status: caseTasks.status })
+      .from(caseTasks)
+      .where(
+        and(eq(caseTasks.id, document.taskId), eq(caseTasks.tenantId, auth.tenantId)),
+      )
+      .limit(1);
+    if (taskRows[0] && ['completed', 'cancelled'].includes(taskRows[0].status)) {
+      throw badRequest('این مدرک به کاری بسته‌شده تعلق دارد و قابل حذف نیست.');
+    }
+  }
+  await db.transaction(async (tx) => {
+    await tx
+      .delete(caseDocuments)
+      .where(
+        and(
+          eq(caseDocuments.id, document.id),
+          eq(caseDocuments.tenantId, auth.tenantId),
+        ),
+      );
+    await addCaseEvent(tx, {
+      tenantId: auth.tenantId,
+      caseId: caseRow.id,
+      type: 'document.deleted',
+      actorId: auth.userId,
+      data: {
+        documentId: document.id,
+        name: document.name,
+        documentKey: document.documentKey,
+      },
+    });
+    await writeAudit(tx, {
+      tenantId: auth.tenantId,
+      actorId: auth.userId,
+      action: 'case.document_deleted',
+      entityType: 'case',
+      entityId: caseRow.id,
+      before: { documentId: document.id, name: document.name },
+    });
+  });
+  try {
+    await removeStoredFile(document.storagePath);
+  } catch {
+    // The database row is already gone; a leftover file is harmless.
+  }
 }
 
 export async function cancelCase(
@@ -694,10 +989,20 @@ export async function cancelCase(
     throw badRequest('این پرونده قابل لغو نیست.');
   }
   await db.transaction(async (tx) => {
-    await tx
+    const cancelled = await tx
       .update(cases)
       .set({ status: 'cancelled', dueAt: null, updatedAt: new Date() })
-      .where(eq(cases.id, caseId));
+      .where(
+        and(
+          eq(cases.id, caseId),
+          eq(cases.tenantId, auth.tenantId),
+          notInArray(cases.status, ['completed', 'cancelled', 'rejected']),
+        ),
+      )
+      .returning({ id: cases.id });
+    if (!cancelled[0]) {
+      throw badRequest('این پرونده در همین لحظه تغییر کرده و قابل لغو نیست.');
+    }
     await tx
       .update(caseTasks)
       .set({ status: 'cancelled', updatedAt: new Date() })

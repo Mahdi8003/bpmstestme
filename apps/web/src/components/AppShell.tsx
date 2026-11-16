@@ -16,18 +16,23 @@ import {
   House,
   List,
   MagnifyingGlass,
+  Moon,
   Plus,
   SignOut,
   SquaresFour,
+  Sun,
   Tray,
   X,
 } from '@phosphor-icons/react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { useTheme } from '@/lib/theme';
+import { hasPermission } from '@/lib/roles';
 import { roleLabel, titleForPath } from '@/lib/format';
 import { Avatar, Button, cn } from './ui';
 import { BrandMark } from './BrandMark';
 import { SearchCommand } from './SearchCommand';
+import { InstallAppButton } from './InstallApp';
 
 const primaryNav = [
   { to: '/', label: 'امروز', icon: House, end: true },
@@ -41,7 +46,7 @@ const insightNav = [
 ];
 
 const orgNav = [
-  { to: '/data', label: 'داده‌های پایه', icon: Database },
+  { to: '/data', label: 'داده‌های پایه', icon: Database, dataOnly: true },
   { to: '/admin', label: 'مدیریت', icon: GearSix, adminOnly: true },
 ];
 
@@ -51,6 +56,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
     setMobileOpen(false);
@@ -58,33 +64,46 @@ export function AppShell() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        setSearchOpen(true);
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'k') return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName.toLowerCase();
+      if (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        target?.isContentEditable
+      ) {
+        return;
       }
+      event.preventDefault();
+      setSearchOpen(true);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
   const notifications = useQuery({
-    queryKey: ['notifications', 'unread'],
+    queryKey: ['notifications', 'badge'],
     queryFn: () => api.get<NotificationsDto>('/notifications?unread=true&limit=1'),
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
   const unread = notifications.data?.unread ?? 0;
 
-  const canBuild = user?.role && ['admin', 'builder', 'manager'].includes(user.role);
+  const canBuild = hasPermission(user, 'buildProcesses');
+  const canManageData = hasPermission(user, 'manageMasterData');
+  const canAdmin =
+    hasPermission(user, 'manageUsers') || hasPermission(user, 'manageRoles');
 
   const sidebar = (
     <SidebarContent
       userName={user?.name ?? ''}
-      userRole={user?.role ?? 'member'}
+      userRole={user?.roleName ?? roleLabel(user?.role ?? 'member')}
       avatarColor={user?.avatarColor ?? '#1E3A5F'}
       tenantName={tenant?.name ?? ''}
-      canBuild={Boolean(canBuild)}
-      isAdmin={user?.role === 'admin'}
+      canBuild={canBuild}
+      canManageData={canManageData}
+      isAdmin={canAdmin}
       onLogout={async () => {
         await logout();
         navigate('/login', { replace: true });
@@ -93,24 +112,24 @@ export function AppShell() {
   );
 
   return (
-    <div className="min-h-screen bg-paper-100 lg:grid lg:grid-cols-[268px_minmax(0,1fr)]">
-      <aside className="sticky top-0 hidden h-screen flex-col overflow-hidden bg-ink-950 text-paper-50 lg:flex">
+    <div className="min-h-screen bg-paper-100 lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
+      <aside className="sticky top-0 hidden h-screen flex-col overflow-hidden border-e border-line bg-paper-50 text-ink-900 lg:flex">
         {sidebar}
       </aside>
 
       <div className="min-w-0">
-        <header className="sticky top-0 z-30 border-b border-line/80 bg-paper-100/85 backdrop-blur-md">
-          <div className="mx-auto flex h-16 w-full max-w-[1500px] items-center gap-3 px-4 md:px-7 lg:px-9">
+        <header className="sticky top-0 z-30 border-b border-line bg-paper-50/95 backdrop-blur-sm">
+          <div className="mx-auto flex h-14 w-full max-w-[1600px] items-center gap-3 px-4 md:px-7 lg:px-8">
             <button
               type="button"
               onClick={() => setMobileOpen(true)}
-              className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-600 lg:hidden"
+              className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-paper-50 text-ink-600 hover:bg-paper-100 lg:hidden"
               aria-label="باز کردن منو"
             >
               <List size={19} />
             </button>
             <div className="flex min-w-0 items-center gap-2.5 lg:hidden">
-              <BrandMark size={28} className="text-ink-900" />
+              <BrandMark size={28} className="text-copper-600" />
               <span className="display text-lg font-bold text-ink-900">روند</span>
             </div>
             <div className="hidden min-w-0 items-baseline gap-2.5 lg:flex">
@@ -141,6 +160,16 @@ export function AppShell() {
                 <MagnifyingGlass size={18} />
               </button>
 
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors hover:bg-paper-200 hover:text-ink-800"
+                aria-label={theme === 'dark' ? 'روشن کردن تم' : 'تیره کردن تم'}
+                title={theme === 'dark' ? 'تم روشن' : 'تم تیره'}
+              >
+                {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+
               <NavLink
                 to="/notifications"
                 className="focus-ring relative flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 hover:bg-paper-200"
@@ -148,7 +177,7 @@ export function AppShell() {
               >
                 <Bell size={18} />
                 {unread > 0 ? (
-                  <span className="absolute end-1.5 top-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-copper-500 px-0.5 font-mono text-[8px] font-bold text-white">
+                  <span className="absolute end-1.5 top-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-copper-500 px-0.5 font-mono text-[8px] font-bold text-on-accent">
                     {unread > 9 ? '۹+' : unread.toLocaleString('fa-IR')}
                   </span>
                 ) : null}
@@ -168,7 +197,7 @@ export function AppShell() {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1500px] px-4 py-6 pb-24 md:px-7 lg:px-9 lg:py-8 lg:pb-12">
+        <main className="mx-auto w-full max-w-[1600px] px-4 py-5 pb-24 md:px-7 lg:px-8 lg:py-7 lg:pb-10">
           <Outlet />
         </main>
       </div>
@@ -177,15 +206,15 @@ export function AppShell() {
         <div className="fixed inset-0 z-50 lg:hidden">
           <button
             type="button"
-            className="absolute inset-0 bg-ink-950/50 backdrop-blur-[2px]"
+            className="absolute inset-0 bg-scrim/50 backdrop-blur-[2px]"
             onClick={() => setMobileOpen(false)}
             aria-label="بستن منو"
           />
-          <div className="animate-rail-in absolute inset-y-0 right-0 flex w-[82vw] max-w-[310px] flex-col bg-ink-950 text-paper-50 shadow-lift">
+          <div className="animate-rail-in absolute inset-y-0 right-0 flex w-[82vw] max-w-[310px] flex-col border-s border-line bg-paper-50 text-ink-900 shadow-lift">
             <button
               type="button"
               onClick={() => setMobileOpen(false)}
-              className="absolute end-3 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-md text-paper-100/60 hover:bg-white/10"
+              className="absolute end-3 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-md text-ink-400 hover:bg-paper-100"
               aria-label="بستن منو"
             >
               <X size={18} />
@@ -195,7 +224,10 @@ export function AppShell() {
         </div>
       ) : null}
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper-50/95 backdrop-blur-md lg:hidden">
+      <nav
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-paper-50/95 backdrop-blur-md lg:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
         <div className="grid grid-cols-4">
           <MobileNavLink to="/" label="امروز" icon={<House size={20} />} end />
           <MobileNavLink to="/inbox" label="صندوق" icon={<Tray size={20} />} />
@@ -222,6 +254,7 @@ function SidebarContent({
   avatarColor,
   tenantName,
   canBuild,
+  canManageData,
   isAdmin,
   onLogout,
 }: {
@@ -230,23 +263,32 @@ function SidebarContent({
   avatarColor: string;
   tenantName: string;
   canBuild: boolean;
+  canManageData: boolean;
   isAdmin: boolean;
   onLogout: () => void;
 }) {
   return (
     <>
-      <div className="flex items-center gap-3 px-5 pb-5 pt-6">
-        <BrandMark size={38} className="text-copper-300" />
+      <div className="flex items-center gap-3 px-5 pb-5 pt-5">
+        <BrandMark size={38} className="text-copper-600" />
         <div>
-          <div className="display text-[22px] font-bold leading-none text-paper-50">روند</div>
-          <div className="mt-1.5 text-[10px] tracking-[0.14em] text-paper-100/35">دفتر جریان کار</div>
+          <div className="display text-[22px] font-bold leading-none text-ink-950">روند</div>
+          <div className="mt-1.5 text-[10px] tracking-[0.14em] text-ink-400">کنسول عملیات سازمان</div>
         </div>
       </div>
 
-      <div className="mx-3 rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2.5">
-        <div className="text-[9px] font-semibold tracking-[0.12em] text-paper-100/35">فضای کار</div>
-        <div className="mt-1 truncate text-xs font-semibold text-paper-50/90">{tenantName}</div>
+      <div className="mx-3 rounded-lg border border-line bg-paper-100 px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[9px] font-semibold tracking-[0.12em] text-ink-400">فضای کار</div>
+          <span className="inline-flex items-center gap-1 text-[9px] font-medium text-verdigris-600">
+            <span className="h-1.5 w-1.5 rounded-full bg-verdigris-500" />
+            فعال
+          </span>
+        </div>
+        <div className="mt-1 truncate text-xs font-semibold text-ink-900">{tenantName}</div>
       </div>
+
+      <InstallAppButton className="mx-3 mt-2" />
 
       <div className="scroll-thin mt-4 flex-1 space-y-5 overflow-y-auto px-3 pb-4">
         <NavSection title="کار روزانه">
@@ -263,24 +305,34 @@ function SidebarContent({
         </NavSection>
         <NavSection title="سازمان">
           {orgNav
-            .filter((item) => !item.adminOnly || isAdmin)
+            .filter(
+              (item) =>
+                (!item.adminOnly || isAdmin) &&
+                (!('dataOnly' in item) || canManageData),
+            )
             .map((item) => (
               <SidebarLink key={item.to} {...item} />
             ))}
         </NavSection>
       </div>
 
-      <div className="border-t border-white/10 p-3">
-        <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
-          <Avatar name={userName} color={avatarColor} size="sm" />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-semibold text-paper-50/90">{userName}</div>
-            <div className="mt-0.5 truncate text-[10px] text-paper-100/35">{roleLabel(userRole)}</div>
-          </div>
+      <div className="border-t border-line p-3">
+        <div className="flex items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-paper-100">
+          <NavLink
+            to="/profile"
+            className="focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-md"
+            aria-label="پروفایل"
+          >
+            <Avatar name={userName} color={avatarColor} size="sm" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs font-semibold text-ink-900">{userName}</div>
+              <div className="mt-0.5 truncate text-[10px] text-ink-400">{userRole}</div>
+            </div>
+          </NavLink>
           <button
             type="button"
             onClick={() => void onLogout()}
-            className="focus-ring flex h-8 w-8 items-center justify-center rounded-md text-paper-100/35 transition hover:bg-white/10 hover:text-paper-50"
+            className="focus-ring flex h-8 w-8 items-center justify-center rounded-md text-ink-400 transition hover:bg-paper-200 hover:text-ink-800"
             aria-label="خروج"
           >
             <SignOut size={16} />
@@ -294,7 +346,7 @@ function SidebarContent({
 function NavSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
-      <div className="mb-1.5 px-2 text-[9px] font-semibold tracking-[0.14em] text-paper-100/28">
+      <div className="mb-1.5 px-2 text-[9px] font-semibold tracking-[0.14em] text-ink-400">
         {title}
       </div>
       <div className="space-y-0.5">{children}</div>
@@ -321,8 +373,8 @@ function SidebarLink({
         cn(
           'focus-ring group relative flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12px] font-medium transition-colors',
           isActive
-            ? 'bg-white/[0.075] text-paper-50'
-            : 'text-paper-100/55 hover:bg-white/[0.045] hover:text-paper-50/90',
+            ? 'bg-copper-50 text-copper-700'
+            : 'text-ink-600 hover:bg-paper-100 hover:text-ink-900',
         )
       }
     >
@@ -331,7 +383,7 @@ function SidebarLink({
           <span
             className={cn(
               'absolute inset-y-1.5 right-0 w-0.5 rounded-full transition-opacity',
-              isActive ? 'bg-copper-400 opacity-100' : 'opacity-0',
+              isActive ? 'bg-copper-500 opacity-100' : 'opacity-0',
             )}
           />
           <Icon size={17} weight={isActive ? 'fill' : 'regular'} />

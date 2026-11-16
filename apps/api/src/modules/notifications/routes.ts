@@ -13,6 +13,7 @@ const querySchema = z.object({
     .optional()
     .transform((value) => value === 'true' || value === '1'),
   limit: z.coerce.number().min(1).max(100).optional().default(50),
+  offset: z.coerce.number().min(0).optional().default(0),
 });
 
 export async function registerNotificationRoutes(app: FastifyInstance): Promise<void> {

@@ -34,6 +34,11 @@ export function validateCaseData(
     if (empty) {
       if (field.required && !options.partial) {
         issues.push({ field: field.key, message: `${field.label} الزامی است.` });
+      } else if (field.type === 'table' && (field.minRows ?? 0) > 0) {
+        issues.push({
+          field: field.key,
+          message: `${field.label} باید حداقل ${field.minRows} ردیف داشته باشد.`,
+        });
       }
       continue;
     }
@@ -111,6 +116,48 @@ export function validateCaseData(
         }
         break;
       }
+      case 'table': {
+        if (!Array.isArray(value)) {
+          issues.push({ field: field.key, message: `${field.label} باید فهرست ردیف‌ها باشد.` });
+          break;
+        }
+        if (field.minRows !== undefined && value.length < field.minRows) {
+          issues.push({
+            field: field.key,
+            message: `${field.label} باید حداقل ${field.minRows} ردیف داشته باشد.`,
+          });
+        }
+        if (field.maxRows !== undefined && value.length > field.maxRows) {
+          issues.push({
+            field: field.key,
+            message: `${field.label} نباید بیشتر از ${field.maxRows} ردیف باشد.`,
+          });
+        }
+        const columns = field.columns ?? [];
+        value.forEach((row, index) => {
+          if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+            issues.push({
+              field: field.key,
+              message: `ردیف ${index + 1} ${field.label} معتبر نیست.`,
+            });
+            return;
+          }
+          const rowIssues = validateCaseData(columns, row as Record<string, unknown>);
+          for (const issue of rowIssues) {
+            issues.push({
+              field: field.key,
+              message: `ردیف ${index + 1}: ${issue.message}`,
+            });
+          }
+        });
+        break;
+      }
+      case 'file': {
+        if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
+          issues.push({ field: field.key, message: `${field.label} باید فایل پیوست معتبر باشد.` });
+        }
+        break;
+      }
       case 'email': {
         if (typeof value !== 'string' || !EMAIL_PATTERN.test(value.trim())) {
           issues.push({ field: field.key, message: `${field.label} باید ایمیل معتبر باشد.` });
@@ -132,7 +179,8 @@ export function validateCaseData(
       case 'party':
       case 'item':
       case 'warehouse':
-      case 'user': {
+      case 'user':
+      case 'master': {
         if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
           issues.push({ field: field.key, message: `${field.label} معتبر نیست.` });
         }

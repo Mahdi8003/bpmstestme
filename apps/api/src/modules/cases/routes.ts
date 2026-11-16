@@ -12,8 +12,10 @@ import { openStoredFile, saveUpload } from '../../lib/files.js';
 import {
   addComment,
   addDocument,
+  authorizeDocumentUpload,
   cancelCase,
   createCase,
+  deleteDocument,
   getCaseDetail,
   getDocumentForDownload,
   listCases,
@@ -22,6 +24,11 @@ import {
 
 const cancelSchema = z.object({
   reason: z.string().max(1000).optional(),
+});
+
+const documentUploadQuerySchema = z.object({
+  documentKey: z.string().max(100).optional(),
+  taskId: z.string().uuid().optional(),
 });
 
 export async function registerCaseRoutes(app: FastifyInstance): Promise<void> {
@@ -71,7 +78,12 @@ export async function registerCaseRoutes(app: FastifyInstance): Promise<void> {
   app.post('/cases/:id/documents', { preHandler: authenticate }, async (request, reply) => {
     const auth = authOf(request);
     const { id } = request.params as { id: string };
-    const query = request.query as { documentKey?: string; taskId?: string };
+    if (!z.string().uuid().safeParse(id).success) {
+      throw badRequest('شناسهٔ پرونده معتبر نیست.');
+    }
+    const query = documentUploadQuerySchema.parse(request.query);
+    // Authorize before touching the filesystem so a malicious URL cannot write files.
+    await authorizeDocumentUpload(auth, id, query.documentKey, query.taskId);
     const file = await request.file();
     if (!file) throw badRequest('فایلی برای بارگذاری انتخاب نشده است.');
     const buffer = await file.toBuffer();
@@ -96,6 +108,23 @@ export async function registerCaseRoutes(app: FastifyInstance): Promise<void> {
     reply.code(201);
     return document;
   });
+
+  app.delete(
+    '/cases/:id/documents/:documentId',
+    { preHandler: authenticate },
+    async (request) => {
+      const auth = authOf(request);
+      const { id, documentId } = request.params as { id: string; documentId: string };
+      if (
+        !z.string().uuid().safeParse(id).success ||
+        !z.string().uuid().safeParse(documentId).success
+      ) {
+        throw badRequest('شناسهٔ مدرک معتبر نیست.');
+      }
+      await deleteDocument(auth, id, documentId);
+      return { ok: true };
+    },
+  );
 
   app.get('/documents/:id/download', { preHandler: authenticate }, async (request, reply) => {
     const auth = authOf(request);

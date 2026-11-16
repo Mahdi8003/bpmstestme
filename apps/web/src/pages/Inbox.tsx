@@ -1,12 +1,13 @@
-import { useDeferredValue, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useDeferredValue, useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import type { TaskDto } from '@ravand/shared';
 import { MagnifyingGlass, Tray, X } from '@phosphor-icons/react';
 import { api, errorMessage } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
 import { PageHeader } from '@/components/PageHeader';
 import { TaskRow } from '@/components/TaskRow';
-import { Button, Card, EmptyState, Skeleton, cn } from '@/components/ui';
+import { Button, Card, EmptyState, Skeleton, Spinner, cn } from '@/components/ui';
 
 const scopes = [
   { key: 'mine', label: 'کارهای من', hint: 'کارهایی که به شما سپرده شده یا در حال بررسی است.' },
@@ -17,23 +18,52 @@ const scopes = [
 
 type Scope = (typeof scopes)[number]['key'];
 
+const PAGE_SIZE = 50;
+
 export function InboxPage() {
-  const [scope, setScope] = useState<Scope>('mine');
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedScope = searchParams.get('scope');
+  const [scope, setScope] = useState<Scope>(
+    scopes.some((item) => item.key === requestedScope)
+      ? (requestedScope as Scope)
+      : 'mine',
+  );
   const [search, setSearch] = useState('');
   const deferredSearch = useDeferredValue(search);
 
-  const tasks = useQuery({
+  useEffect(() => {
+    setScope(
+      scopes.some((item) => item.key === requestedScope) ? (requestedScope as Scope) : 'mine',
+    );
+  }, [requestedScope]);
+
+  const changeScope = (next: Scope) => {
+    setScope(next);
+    setSearchParams(next === 'mine' ? {} : { scope: next }, { replace: true });
+  };
+
+  const tasks = useInfiniteQuery({
     queryKey: ['tasks', scope, deferredSearch],
-    queryFn: () =>
+    queryFn: ({ pageParam }) =>
       api.get<TaskDto[]>(
-        `/tasks?scope=${scope}&limit=200${
+        `/tasks?scope=${scope}&limit=${PAGE_SIZE}&offset=${pageParam}${
           deferredSearch.trim() ? `&q=${encodeURIComponent(deferredSearch.trim())}` : ''
         }`,
       ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length === PAGE_SIZE ? allPages.length * PAGE_SIZE : undefined,
     placeholderData: (previous) => previous,
   });
 
+  const items = tasks.data?.pages.flatMap((page) => page) ?? [];
+
   const activeScope = scopes.find((item) => item.key === scope) ?? scopes[0];
+  const scopeHint =
+    scope === 'all' && user?.role !== 'admin'
+      ? 'کارهای در جریان پرونده‌هایی که به آن‌ها دسترسی دارید.'
+      : activeScope.hint;
 
   return (
     <div>
@@ -58,7 +88,7 @@ export function InboxPage() {
               <button
                 key={item.key}
                 type="button"
-                onClick={() => setScope(item.key)}
+                onClick={() => changeScope(item.key)}
                 className={cn(
                   'focus-ring relative shrink-0 rounded-t-md px-3 py-2 text-xs font-semibold transition-colors',
                   scope === item.key
@@ -85,7 +115,7 @@ export function InboxPage() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="جستجو در عنوان کار یا شماره پرونده…"
-              className="focus-ring h-9 w-full rounded-lg border border-line bg-white/70 ps-9 pe-8 text-xs text-ink-800 placeholder:text-ink-400 focus:border-copper-400 focus:bg-white"
+              className="focus-ring h-9 w-full rounded-lg border border-line bg-paper-50/70 ps-9 pe-8 text-xs text-ink-800 placeholder:text-ink-400 focus:border-copper-400 focus:bg-paper-50"
             />
             {search ? (
               <button
@@ -98,8 +128,9 @@ export function InboxPage() {
               </button>
             ) : null}
           </div>
-          <p className="text-[10px] leading-5 text-ink-400 sm:max-w-xs sm:text-end">
-            {activeScope.hint}
+          <p className="flex items-center gap-1.5 text-[10px] leading-5 text-ink-400 sm:max-w-xs sm:justify-end sm:text-end">
+            {tasks.isFetching && !tasks.isLoading ? <Spinner size={11} /> : null}
+            {scopeHint}
           </p>
         </div>
 
@@ -124,11 +155,23 @@ export function InboxPage() {
               </div>
             ))}
           </div>
-        ) : tasks.data?.length ? (
+        ) : items.length ? (
           <div className="divide-y divide-line/70">
-            {tasks.data.map((task) => (
+            {items.map((task) => (
               <TaskRow key={task.id} task={task} />
             ))}
+            {tasks.hasNextPage ? (
+              <div className="border-t border-line px-4 py-3 text-center">
+                <Button
+                  variant="paper"
+                  size="sm"
+                  loading={tasks.isFetchingNextPage}
+                  onClick={() => void tasks.fetchNextPage()}
+                >
+                  نمایش کارهای بیشتر
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <EmptyState
@@ -141,7 +184,9 @@ export function InboxPage() {
                   : scope === 'available'
                     ? 'کار قابل برداشتی نیست.'
                     : scope === 'all'
-                      ? 'کار باز دیگری در سازمان نیست.'
+                      ? user?.role === 'admin'
+                        ? 'کار باز دیگری در سازمان نیست.'
+                        : 'کار باز دیگری در دسترس شما نیست.'
                       : 'صندوق شما خالی است.'
             }
             description={

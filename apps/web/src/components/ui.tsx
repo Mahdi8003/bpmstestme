@@ -1,4 +1,4 @@
-import {
+﻿import {
   forwardRef,
   useEffect,
   useRef,
@@ -22,20 +22,20 @@ const buttonVariants = {
   primary:
     'bg-ink-900 text-paper-50 shadow-[0_1px_0_rgba(255,255,255,0.12)_inset] hover:bg-ink-800 active:bg-ink-950',
   ink: 'bg-ink-900 text-paper-50 shadow-[0_1px_0_rgba(255,255,255,0.12)_inset] hover:bg-ink-800 active:bg-ink-950',
-  copper: 'bg-copper-500 text-white hover:bg-copper-600 active:bg-copper-700',
-  paper: 'border border-line bg-white/55 text-ink-700 hover:border-ink-300 hover:bg-white',
+  copper: 'bg-copper-500 text-on-accent hover:bg-copper-600 active:bg-copper-700',
+  paper: 'border border-line bg-paper-50/55 text-ink-700 hover:border-ink-300 hover:bg-paper-50',
   secondary:
-    'border border-line bg-paper-50 text-ink-800 hover:border-ink-300 hover:bg-white active:bg-paper-100',
+    'border border-line bg-paper-50 text-ink-800 hover:border-ink-300 hover:bg-paper-50 active:bg-paper-100',
   ghost: 'text-ink-600 hover:bg-paper-200/80 active:bg-paper-300/60',
-  danger: 'bg-stamp-600 text-white hover:bg-stamp-500 active:bg-stamp-600',
+  danger: 'bg-stamp-600 text-on-accent hover:bg-stamp-500 active:bg-stamp-600',
   quiet: 'border border-transparent text-ink-500 hover:border-line hover:text-ink-800',
 } as const;
 
 const buttonSizes = {
   sm: 'h-8 gap-1.5 rounded-md px-2.5 text-xs',
-  md: 'h-10 gap-2 rounded-lg px-3.5 text-sm',
-  lg: 'h-11 gap-2 rounded-lg px-5 text-sm',
-  icon: 'h-9 w-9 rounded-lg',
+  md: 'h-9 gap-2 rounded-md px-3.5 text-[13px]',
+  lg: 'h-10 gap-2 rounded-md px-5 text-[13px]',
+  icon: 'h-8 w-8 rounded-md',
 } as const;
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -91,7 +91,7 @@ export function Card({
   return (
     <div
       className={cn(
-        'rounded-xl border border-line bg-paper-50 shadow-folio',
+        'rounded-lg border border-line bg-paper-50 shadow-folio',
         className,
       )}
       {...props}
@@ -115,7 +115,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold leading-5',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded border px-2 py-0.5 text-[10px] font-semibold leading-4',
         badgeTones[tone],
         className,
       )}
@@ -127,7 +127,7 @@ export function Badge({
 }
 
 const inputClass =
-  'focus-ring h-10 w-full rounded-lg border border-line bg-white/75 px-3 text-sm text-ink-900 placeholder:text-ink-400 transition-colors focus:border-copper-400 focus:bg-white disabled:cursor-not-allowed disabled:bg-paper-200/60 disabled:text-ink-500';
+  'focus-ring h-9 w-full rounded-md border border-line bg-paper-50 px-3 text-[13px] text-ink-900 placeholder:text-ink-400 transition-colors focus:border-copper-400 focus:bg-paper-50 disabled:cursor-not-allowed disabled:bg-paper-200/60 disabled:text-ink-500';
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   function Input({ className, ...props }, ref) {
@@ -142,7 +142,7 @@ export const Textarea = forwardRef<
   return (
     <textarea
       ref={ref}
-      className={cn(inputClass, 'h-auto min-h-24 resize-y py-2.5 leading-7', className)}
+      className={cn(inputClass, 'h-auto min-h-24 resize-y py-2.5 leading-6', className)}
       {...props}
     />
   );
@@ -175,7 +175,7 @@ export function Field({
 }) {
   return (
     <label className={cn('block space-y-1.5', className)}>
-      <span className="flex items-center gap-1.5 text-xs font-semibold text-ink-700">
+      <span className="flex items-center gap-1.5 text-[11px] font-semibold text-ink-700">
         {label}
         {required ? <span className="text-copper-500">*</span> : null}
       </span>
@@ -296,7 +296,26 @@ export function Modal({
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCloseRef.current();
+      if (event.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const nodes = panel.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!nodes.length) return;
+      const first = nodes[0]!;
+      const last = nodes[nodes.length - 1]!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
     const previousOverflow = document.body.style.overflow;
@@ -331,7 +350,7 @@ export function Modal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/40 p-0 backdrop-blur-[2px] sm:items-center sm:p-6"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/50 p-0 backdrop-blur-[2px] sm:items-center sm:p-6"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -538,3 +557,4 @@ export function Tabs({
     </div>
   );
 }
+
